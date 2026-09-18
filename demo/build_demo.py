@@ -1,7 +1,7 @@
 """데모 데이터로 대시보드 만들기 - 실제 메일함 · Claude 호출 없이 화면을 그대로 재현한다.
 
-  python demo/build_demo.py     demo/dashboard.html (파일로 여는 보기 전용 화면)
-  python demo/serve_demo.py     http://127.0.0.1:8790 (버튼 기록까지 되는 데모 서버)
+  python demo/build_demo.py     docs/index.html (서버 없이 여는 데모 - GitHub Pages. 버튼 기록은 방문자 브라우저에)
+  python demo/serve_demo.py     http://127.0.0.1:8790 (데모 서버 - 기록을 데모 DB 에)
 
 모든 회사 · 사람 · 메일은 가상이다. 도메인은 예시 전용(.example)이라 실제로 연결되지 않는다.
 업무 정리(LLM) 결과는 미리 써 넣은 값을 쓰고, 날짜는 2026-09-18(금) 11:00 기준으로 고정한다.
@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -20,16 +21,18 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from nwmail.client import Mail                                      # noqa: E402
-from nwmail.dashboard import build_model, render_html, task_id      # noqa: E402
-from nwmail.feedback import FeedbackStore                           # noqa: E402
+from nwmail.dashboard import build_model, esc, render_html, task_id  # noqa: E402
+from nwmail.feedback import MARKS, FeedbackStore                    # noqa: E402
 from nwmail.filters import add_filter, add_protected, reapply       # noqa: E402
+from nwmail.server import _due_json, _mark_json                     # noqa: E402
 from nwmail.store import Store                                      # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 DEMO_MAIL = HERE / "demo_mail.db"
 DEMO_FB = HERE / "demo_feedback.db"
-STATIC = HERE / "dashboard.html"      # 파일로 여는 보기 전용 (저장소에 올린다)
+PAGES = ROOT / "docs" / "index.html"  # 서버 없이 여는 데모 (GitHub Pages · 파일로 열어도 됨). 저장소에 올린다
 SERVED = HERE / "served.html"         # 데모 서버가 쓰는 페이지 (실행할 때마다 토큰이 바뀌어 올리지 않는다)
+RESET_LINK = ' 버튼 기록은 이 브라우저에만 저장돼요. <a href="#" id="demo-reset">처음 상태로</a>'
 PORT = 8790
 
 KST = timezone(timedelta(hours=9))
@@ -376,18 +379,36 @@ def seed() -> None:
             fb.token()
 
 
+def feedback_seed(fb: FeedbackStore) -> dict:
+    """서버의 GET /api/feedback 과 같은 모양의 기록 (서버 없는 페이지의 처음 상태)."""
+    states = {k: {"label": v["label"], "reason": v["reason"], "labeled_at": v["labeled_at"]}
+              for k, v in fb.states().items()}
+    return {"states": states, "dues": {k: _due_json(v) for k, v in fb.dues().items()},
+            **{f"{t}s": {k: _mark_json(v) for k, v in fb.marks(t).items()} for t in MARKS}}
+
+
 def render(server: dict | None) -> str:
+    """server 가 있으면 그 서버로 기록하는 페이지, 없으면 서버 없이 여는 페이지 (demo_api.js 가 대신)."""
     with Store(DEMO_MAIL) as st, FeedbackStore(DEMO_FB) as fb:
         model = build_model(st, me=ME, now=NOW, window_days=7, feedback=fb)
+        seed_state = feedback_seed(fb)
         if server is not None:
             server = dict(server, token=fb.token())
-    html = render_html(model, notice=NOTICE, server=server)
+    standalone = server is None
+    html = render_html(model, notice=NOTICE, server=server or {"same_origin": True})
     # 데모 안내는 경고가 아니라 알림으로
     html = html.replace('<div class="banner warn" role="alert">', '<div class="banner" role="note">', 1)
     html = re.sub(r'(<details class="proj"[^>]*data-project="' + re.escape(OPEN_PROJECT) + r'"[^>]*)>',
                   r"\1 open>", html, count=1)
-    if server is None:
-        html = html.replace("<code>python serve.py</code>", "<code>python demo/serve_demo.py</code>")
+    if standalone:
+        html = html.replace(esc(NOTICE) + "</div>", esc(NOTICE) + RESET_LINK + "</div>", 1)
+        seed = json.dumps(seed_state, ensure_ascii=False).replace("<", "\\u003c")
+        version = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:10]
+        api = (HERE / "demo_api.js").read_text(encoding="utf-8")
+        html = html.replace(
+            '<script type="application/json" id="nw-conf">',
+            f'<script type="application/json" id="demo-seed" data-version="{version}">{seed}</script>'
+            f'<script>{api}</script><script type="application/json" id="nw-conf">', 1)
     return html
 
 
@@ -403,11 +424,13 @@ def main() -> int:
     args = p.parse_args()
     if not args.keep or not DEMO_MAIL.exists():
         seed()
-    write(STATIC, render(None))
+    PAGES.parent.mkdir(exist_ok=True)
+    write(PAGES, render(None))
+    (PAGES.parent / ".nojekyll").touch()           # GitHub Pages 가 파일을 그대로 내보내도록
     with Store(DEMO_MAIL) as st:
         s = st.stats(None)
-    print(f"[OK] {STATIC.relative_to(ROOT)}  (메일 {s.get('total')}통)")
-    print("  버튼까지 눌러 보려면: python demo/serve_demo.py  -> http://127.0.0.1:8790/")
+    print(f"[OK] {PAGES.relative_to(ROOT)}  (메일 {s.get('total')}통, 서버 없이 열리는 데모)")
+    print("  데모 서버로 열려면: python demo/serve_demo.py  -> http://127.0.0.1:8790/")
     return 0
 
 

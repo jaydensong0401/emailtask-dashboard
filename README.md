@@ -89,9 +89,15 @@ flowchart LR
 - **미리보기 정리** — 인용된 이전 메일과 서명을 걷어내고 전화번호를 가립니다.
 - **외부 전송이 안 되는 환경** — `rules` · `ollama` 엔진을 쓰면 메일 본문이 PC 밖으로 나가지 않습니다.
 
-## 데모 실행
+## 데모
 
-Python 3.10 이상이 필요합니다 (3.12 에서 확인).
+**온라인 데모: https://jaydensong0401.github.io/emailtask-dashboard/**
+
+서버 없이 브라우저 안에서 동작합니다. 완료 · 제외 · 업무삭제 · 기한 · 답변완료 버튼 기록은 방문자 브라우저에만
+저장되고, 화면 위 안내줄의 **처음 상태로** 로 되돌릴 수 있습니다. 차단 규칙 변경만 로컬 데모 서버에서 됩니다.
+데모는 실제 메일함에 접속하지 않고 AI 도 부르지 않습니다 (정리 결과는 `demo/build_demo.py` 에 미리 써 두었습니다).
+
+직접 만들어 보려면 Python 3.10 이상이 필요합니다 (3.12 에서 확인).
 
 ```bash
 pip install -r requirements.txt
@@ -101,18 +107,20 @@ pip install -r requirements.txt
 python demo/build_demo.py
 ```
 
-`demo/dashboard.html` 이 만들어집니다. 파일로 열면 모든 탭을 둘러볼 수 있고, 버튼은 잠겨 있습니다.
-완료 · 제외 · 기한 · 차단 규칙 버튼까지 눌러 보려면 데모 서버를 켭니다.
+`docs/index.html` 이 만들어집니다 (온라인 데모와 같은 페이지, 파일로 열어도 버튼이 동작합니다).
+기록을 서버에 저장하고 차단 규칙까지 바꿔 보려면 데모 서버를 켭니다.
 
 ```bash
 python demo/serve_demo.py
 ```
 
 http://127.0.0.1:8790/ 로 열면 됩니다. 기록은 `demo/` 안의 데모 DB 에만 저장되고, 처음 상태로 되돌리려면
-`python demo/serve_demo.py --reset` 을 씁니다. 데모는 실제 메일함에 접속하지 않고 AI 도 부르지 않습니다
-(정리 결과는 `demo/build_demo.py` 에 미리 써 두었습니다).
+`python demo/serve_demo.py --reset` 을 씁니다.
 
-## 클라우드 데모 (Google Cloud Run)
+## 클라우드 데모 (선택 · Google Cloud Run)
+
+온라인 데모는 GitHub Pages 로 충분합니다. 서버째 올리고 싶을 때만 씁니다. Cloud Run 은 매달 무료 사용량이 있지만,
+넘는 사용량(이미지 보관 · 데이터 전송 등)은 과금될 수 있습니다.
 
 저장소 루트의 `Dockerfile` 로 빌드합니다. 컨테이너는 `python demo/serve_demo.py --cloud` 로 켜지고,
 켤 때마다 데모 데이터를 처음 상태로 만듭니다. 방문자는 같은 데모 기록을 함께 보고, 서버가 쉬었다가
@@ -149,8 +157,8 @@ python test_dashboard.py
 
 ```
 nwmail/            핵심 모듈 (수집 · 저장 · 대화 묶기 · 정리 · 대시보드 · 로컬 서버 · 차단)
-demo/              데모 데이터 생성 · 데모 서버 · 미리 만든 데모 화면(dashboard.html)
-docs/screenshots/  README 화면
+demo/              데모 데이터 생성 · 데모 서버 · 서버 없이 여는 페이지용 API 대역(demo_api.js)
+docs/              온라인 데모 페이지(index.html, GitHub Pages) · README 화면(screenshots/)
 projects.json      프로젝트 식별 규칙 (고객사 > 세부 프로젝트 > 제목 키워드, 별칭, 도메인)
 sync.py · extract.py · dashboard.py · serve.py · auto.py   실행 스크립트
 test_*.py          검증 스위트
