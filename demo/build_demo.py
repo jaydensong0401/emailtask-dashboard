@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import re
@@ -387,6 +388,15 @@ def feedback_seed(fb: FeedbackStore) -> dict:
             **{f"{t}s": {k: _mark_json(v) for k, v in fb.marks(t).items()} for t in MARKS}}
 
 
+def icon_links() -> str:
+    """탭 아이콘. 페이지 하나로 끝나도록 data URI 로 심는다 (PNG 는 SVG 를 못 쓰는 브라우저 · 홈 화면용)."""
+    def uri(name: str, mime: str) -> str:
+        return f"data:{mime};base64," + base64.b64encode((HERE / name).read_bytes()).decode("ascii")
+    return (f'<link rel="icon" type="image/png" sizes="32x32" href="{uri("favicon-32.png", "image/png")}">'
+            f'<link rel="icon" type="image/svg+xml" href="{uri("favicon.svg", "image/svg+xml")}">'
+            f'<link rel="apple-touch-icon" href="{uri("apple-touch-icon.png", "image/png")}">')
+
+
 def render(server: dict | None) -> str:
     """server 가 있으면 그 서버로 기록하는 페이지, 없으면 서버 없이 여는 페이지 (demo_api.js 가 대신)."""
     with Store(DEMO_MAIL) as st, FeedbackStore(DEMO_FB) as fb:
@@ -396,6 +406,7 @@ def render(server: dict | None) -> str:
             server = dict(server, token=fb.token())
     standalone = server is None
     html = render_html(model, notice=NOTICE, server=server or {"same_origin": True})
+    html = html.replace('initial-scale=1">', 'initial-scale=1">' + icon_links(), 1)
     # 데모 안내는 경고가 아니라 알림으로
     html = html.replace('<div class="banner warn" role="alert">', '<div class="banner" role="note">', 1)
     html = re.sub(r'(<details class="proj"[^>]*data-project="' + re.escape(OPEN_PROJECT) + r'"[^>]*)>',
