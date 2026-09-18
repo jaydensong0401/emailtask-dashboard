@@ -1,0 +1,16 @@
+.env
+.tokens.json
+*.pem
+__pycache__/
+*.pyc
+out/
+.env.drm-broken.bak
+mail.db
+mail.db-journal
+feedback.db
+feedback.db-journal
+
+# 데모 DB (python demo/build_demo.py 로 다시 만든다)
+demo/*.db
+demo/*.db-journal
+demo/served.html
