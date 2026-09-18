@@ -40,7 +40,12 @@ class _Server(ThreadingHTTPServer):
 
 
 def make_server(port: int, page: Path, feedback: FeedbackStore,
-                host: str = "127.0.0.1") -> ThreadingHTTPServer:
+                host: str = "127.0.0.1", allowed_hosts=()) -> ThreadingHTTPServer:
+    """allowed_hosts: 127.0.0.1 · localhost 말고도 받을 주소 (클라우드에 올린 데모 서비스의 도메인 등).
+
+    주소 검사는 그대로 하고, 배포한 쪽이 명시한 주소만 더 받는다.
+    """
+    extra = {h.strip().lower() for h in allowed_hosts if h and h.strip()}
     token = feedback.token()
     lock = threading.Lock()                # sqlite 연결 하나를 요청 스레드들이 나눠 쓴다
 
@@ -67,7 +72,8 @@ def make_server(port: int, page: Path, feedback: FeedbackStore,
         def _local_host(self) -> bool:
             """DNS 리바인딩 방지: 주소창이 127.0.0.1/localhost 일 때만 받는다."""
             bound = self.server.server_address[1]
-            return self.headers.get("Host", "") in {f"127.0.0.1:{bound}", f"localhost:{bound}"}
+            host = self.headers.get("Host", "")
+            return host in {f"127.0.0.1:{bound}", f"localhost:{bound}"} or host.lower() in extra
 
         def _authorized(self) -> bool:
             return self._local_host() and self.headers.get(TOKEN_HEADER) == token

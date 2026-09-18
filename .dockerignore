@@ -1,0 +1,9 @@
+.git
+**/__pycache__
+*.pyc
+.env
+demo/*.db
+demo/*.db-journal
+demo/served.html
+docs/
+test_*.py

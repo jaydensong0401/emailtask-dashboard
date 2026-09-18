@@ -1469,7 +1469,7 @@ BLOCK_JS = r"""
   var root=document.getElementById('blk');if(!root)return;
   var msg=document.getElementById('blk-msg'),KEY='nwmail.blkmsg';
   function conf(){try{return JSON.parse(document.getElementById('nw-conf').textContent)}catch(e){return {}}}
-  function served(c){return !!c.port&&/^https?:$/.test(location.protocol)&&location.port===String(c.port);}
+  function served(c){return !!c.sameOrigin||(!!c.port&&/^https?:$/.test(location.protocol)&&location.port===String(c.port));}
   function say(text,bad){msg.textContent=text;msg.hidden=false;msg.classList.toggle('bad',!!bad);}
   function lock(on,title){
     root.querySelectorAll('[data-fop] button,button[data-fop],.fadd input,.fadd select,.cand select')
@@ -1544,6 +1544,8 @@ def render_html(m: dict, notice: str = "", server: dict | None = None) -> str:
     """server = {"port": 8787, "token": "..."} 이면 버튼 기록을 그 로컬 서버로 보낸다."""
     s = m["stats"]
     conf = {"port": (server or {}).get("port"), "token": (server or {}).get("token", ""),
+            # 클라우드 데모: 페이지를 연 주소의 서버로 기록한다 (127.0.0.1:포트 가 아니어도)
+            "sameOrigin": bool((server or {}).get("same_origin")),
             "labels": LABELS, "reasons": {k: list(v) for k, v in REASONS.items()},
             "groups": ACT_GROUPS,
             "marks": MARKS, "waitPreview": WAIT_PREVIEW, "unclassified": UNCLASSIFIED,
@@ -2061,7 +2063,7 @@ JS = """
   var conf={};
   try{conf=JSON.parse(document.getElementById('nw-conf').textContent)}catch(e){}
   var SERVER=conf.port?'http://127.0.0.1:'+conf.port+'/':'';
-  var served=!!conf.port&&/^https?:$/.test(location.protocol)&&location.port===String(conf.port);
+  var served=!!conf.sameOrigin||(!!conf.port&&/^https?:$/.test(location.protocol)&&location.port===String(conf.port));
   // 파일로 열었던 대시보드가 서버 주소로 옮겨 올 때, 그 브라우저에 있던 체크 기록을 #import= 로 받는다
   var imported=null;
   if(location.hash.indexOf('#import=')===0){
