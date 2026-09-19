@@ -849,61 +849,57 @@ def _hero(m: dict) -> str:
     wait = f'답 기다리는 메일 <em class="c-warn"><span id="hl-wait">{s["unanswered"]}</span>건</em>'
     title = (f'처리할 일이 <em class="c-acc"><span id="hl-me">{s["my_open"]}</span>건</em>, {wait}'
              if s["extracted"] else f'업무 정리 전 · {wait}')
-    local = m["generated_at"].astimezone(KST)
-    nxt = m["next_extract"]
-    nxt_label = f"{nxt:%H:%M}" if nxt.date() == local.date() else f"내일 {nxt:%H:%M}"
-    sync = fmt_dt(m["last_sync"]) if m["last_sync"] else "없음"
-    ext = fmt_dt(m["last_extract"]) if m.get("last_extract") else "없음"
     d = m["today"]
+    local = m["generated_at"].astimezone(KST)
     return (
         '<header class="hero"><div class="hero-t">'
         f'<p class="eyebrow">MAIL DIGEST · {d:%m/%d} {WEEKDAYS[d.weekday()]}</p>'
-        f'<h1>{title}</h1>'
-        f'<p class="sub" title="생성 {local:%Y-%m-%d %H:%M}">{esc(m["me"])} · 최근 '
-        f'{m["window_days"]}일 대화 {s["threads"]}건 · 마지막 동기화 {esc(sync)}</p></div>'
-        '<div class="hero-side"><div class="tools">'
-        '<label class="pill switch">완료 숨기기<input type="checkbox" id="hide-done" role="switch">'
-        '</label><button type="button" id="theme" class="pill" aria-label="테마 전환">테마: 시스템'
-        '</button></div>'
-        f'<p class="runs">마지막 정리 <b class="num">{esc(ext)}</b> · '
-        f'다음 자동 정리 <b class="num">{esc(nxt_label)}</b></p></div></header>'
+        f'<h1 class="sr-only">{title}</h1>'
+        f'<p class="sub" title="생성 {local:%Y-%m-%d %H:%M}">{esc(m["me"])}</p></div>'
+        '<button type="button" id="theme" class="pill" aria-label="테마 전환">테마: 시스템</button>'
+        '</header>'
     )
 
 
 def _kpis(m: dict) -> str:
     s = m["stats"]
     todo = s["threads"] - s["excluded"]
-    left = todo - s["extracted"]
-
-    def tile(label: str, value: str, unit: str, caption: str) -> str:
-        unit_html = f'<span class="u">{unit}</span>' if unit else ""
-        return (f'<div class="kpi"><p class="l">{label}</p><p class="v">{value}{unit_html}</p>'
-                f'<p class="c">{caption}</p></div>')
-
+    left = max(0, todo - s["extracted"])
     if s["extracted"]:
-        me = tile("내 할 일", f'<b class="num" id="kpi-me">{s["my_open"]}</b>', "건 남음",
-                  f'오늘 마감 <span id="kpi-today">{s["due_today"]}</span> · '
-                  f'지난 마감 <span id="kpi-over">{s["overdue"]}</span> · '
-                  f'오늘 완료 <span id="kpi-done">{s["done_today"]}</span>')
+        value = f'<b class="num" id="kpi-me">{s["my_open"]}</b><span class="u">건 남음</span>'
+        caption = (f'<span>지난 마감 <span id="kpi-over">{s["overdue"]}</span></span>'
+                   f'<span>오늘 마감 <span id="kpi-today">{s["due_today"]}</span></span>'
+                   f'<span>오늘 완료 <span id="kpi-done">{s["done_today"]}</span></span>')
     else:
-        me = tile("내 할 일", '<b class="num">—</b>', "", "업무 정리 대기")
-    if s["oldest_wait"]:
-        wait_caption = f'가장 오래된 건 {s["oldest_wait"]}일 경과'
-    else:
-        wait_caption = "모두 오늘 온 메일" if s["unanswered"] else "모두 답했습니다"
-    summary_caption = f"남은 {left}건은 다음 정리 때" if left > 0 else "모두 정리됨"
-    if s["excluded"]:
-        summary_caption += f' · 정기 메일 {s["excluded"]}건 제외'
+        value = '<b class="num">—</b>'
+        caption = '업무 정리 대기'
+    wait_caption = (f'가장 오래된 건 {s["oldest_wait"]}일 경과' if s["oldest_wait"] else
+                    '모두 오늘 온 메일' if s["unanswered"] else '모두 답했습니다')
     warn = " c-warn" if s["unanswered"] else ""
-    return '<div class="kpis">' + "".join([
-        me,
-        tile("미응답", f'<b class="num{warn}" id="kpi-wait">{s["unanswered"]}</b>', "건 대기",
-             f'<span id="kpi-wait-c">{wait_caption}</span>'),
-        tile("진행 프로젝트", f'<b class="num" id="kpi-proj">{s["named_projects"]}</b>', "개",
-             f'새로 온 대화 {s["new"]}건'),
-        tile("요약 완료", f'<b class="num">{s["extracted"]}<span class="den">/{todo}</span></b>',
-             "", summary_caption),
-    ]) + "</div>"
+    local = m["generated_at"].astimezone(KST)
+    nxt = m["next_extract"]
+    nxt_label = f"{nxt:%H:%M}" if nxt.date() == local.date() else f"내일 {nxt:%H:%M}"
+    sync = fmt_dt(m["last_sync"]) if m["last_sync"] else "없음"
+    ext = fmt_dt(m["last_extract"]) if m.get("last_extract") else "없음"
+    summary = f"남은 {left}건은 다음 정리 때" if left else "모두 정리됨"
+    excluded = f' · 정기 메일 {s["excluded"]}건 제외' if s["excluded"] else ""
+    return (
+        '<section class="digest-overview" aria-label="메일 업무 요약"><div class="work-overview">'
+        '<div class="kpis"><div class="kpi"><h2 class="l">내 할 일</h2>'
+        f'<p class="v">{value}</p><p class="c deadline-counts">{caption}</p></div>'
+        '<div class="kpi"><h2 class="l">답장 대기</h2>'
+        f'<p class="v"><b class="num{warn}" id="kpi-wait">{s["unanswered"]}</b><span class="u">건 대기</span></p>'
+        f'<p class="c" id="kpi-wait-c">{wait_caption}</p></div></div>'
+        f'<p class="project-summary">진행 프로젝트 <b class="num" id="kpi-proj">{s["named_projects"]}</b>개'
+        f' · 새로 온 대화 <b class="num">{s["new"]}건</b></p></div>'
+        '<aside class="system-summary" aria-labelledby="system-summary-title">'
+        '<h2 id="system-summary-title">자동 정리</h2><dl>'
+        f'<div><dt>동기화</dt><dd class="num">{esc(sync)}</dd></div>'
+        f'<div><dt>정리</dt><dd>마지막 <b class="num">{esc(ext)}</b> · 다음 <b class="num">{esc(nxt_label)}</b></dd></div>'
+        f'<div><dt>요약</dt><dd><span class="num">{s["extracted"]}<span class="den">/{todo}</span></span> · {summary}</dd></div>'
+        f'<div><dt>범위</dt><dd>최근 {m["window_days"]}일 대화 {s["threads"]}건{excluded}</dd></div>'
+        '</dl></aside></section>'
+    )
 
 
 def _status_text(state: dict | None) -> str:
@@ -1586,8 +1582,10 @@ def render_html(m: dict, notice: str = "", server: dict | None = None) -> str:
         '<!doctype html><html lang="ko"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         f'<title>메일 업무 대시보드</title><style>{CSS}</style></head><body>'
-        f'<main class="wrap"><div class="card">{_hero(m)}{banner}{_kpis(m)}'
+        f'<main class="wrap"><div class="card">{banner}{_hero(m)}{_kpis(m)}'
+        '<div class="view-toolbar">'
         f'<nav class="tabs" role="tablist" aria-label="대시보드 보기">{tablist}</nav>'
+        '<label class="pill switch">완료 숨기기<input type="checkbox" id="hide-done" role="switch"></label></div>'
         f'{panel_html}</div></main>{_act_templates(m)}'
         '<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>'
         f'<script type="application/json" id="nw-conf">{conf_json}</script>'
@@ -1656,15 +1654,40 @@ h1 em{font-style:normal}
 .card>.banner{margin:0 40px 20px}
 .banner.warn{border-color:var(--warn);color:var(--ink)}
 
-.kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:var(--line);border-block:1px solid var(--line)}
-.kpi{background:var(--card);padding:22px 28px 24px;min-width:0}
-.kpi p{margin:0}
-.kpi .l{font-size:12px;color:var(--muted)}
-.kpi .v{display:flex;align-items:baseline;gap:8px;margin-top:10px}
-.kpi .v b{font-size:34px;line-height:1;font-weight:600}
-.kpi .den{font-size:17px;font-weight:500;color:var(--muted)}
-.kpi .u,.kpi .c{font-size:11.5px;color:var(--muted)}
-.kpi .c{margin-top:12px}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.hero{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:24px 40px}
+.hero-t{display:flex;align-items:center;flex-wrap:wrap;gap:8px 16px;min-width:0}
+.hero .sub{overflow-wrap:anywhere}
+.digest-overview{display:grid;grid-template-columns:minmax(0,1.62fr) minmax(0,1fr);gap:48px;padding:0 40px 28px}
+.work-overview{min-width:0}
+.kpis{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:40px;padding:0}
+.kpi{min-width:0}
+.kpi p,.kpi h2{margin:0}
+.kpi .l,.system-summary h2{font-size:12px;font-weight:600;color:var(--muted)}
+.kpi .v{display:flex;align-items:baseline;gap:10px;margin-top:10px}
+.kpi .v b{font-size:48px;line-height:1.2;font-weight:650;letter-spacing:-1.5px}
+.kpi .u{font-size:13px;color:var(--muted)}
+.kpi .c{margin-top:8px;font-size:12px;color:var(--ink);line-height:1.7;word-break:keep-all;overflow-wrap:anywhere}
+.deadline-counts{display:flex;flex-wrap:wrap;gap:4px 16px}
+.deadline-counts>span{white-space:nowrap}
+.deadline-counts>span>span{font-weight:650}
+.project-summary{margin:20px 0 0;padding-top:14px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}
+.project-summary b{color:var(--ink);font-weight:650}
+.system-summary{min-width:0;padding:16px 20px;background:var(--side);border:1px solid var(--line);border-radius:12px}
+.system-summary h2{margin:0 0 10px}
+.system-summary dl{margin:0;display:grid;gap:8px;font-size:12px;line-height:1.65}
+.system-summary dl>div{display:grid;grid-template-columns:56px minmax(0,1fr);gap:12px}
+.system-summary dt{color:var(--muted)}
+.system-summary dd{margin:0;overflow-wrap:anywhere;word-break:keep-all}
+.system-summary b{font-weight:400}
+.view-toolbar{display:flex;align-items:center;gap:16px;padding-right:40px;border-top:1px solid var(--line);box-shadow:inset 0 -1px 0 var(--line)}
+.view-toolbar .tabs{flex:1;min-width:0;box-shadow:none}
+.view-toolbar .switch{flex:none;border:0;padding:0;background:transparent;gap:10px;color:var(--muted);white-space:nowrap}
+.view-toolbar .switch input{width:32px;height:18px}
+.view-toolbar .switch input::after{width:14px;height:14px}
+.view-toolbar .switch input:checked::after{transform:translateX(14px)}
+.card>.banner:first-child{margin:0;padding:8px 40px;border:0;border-bottom:1px solid var(--line);border-radius:0;font-size:12px}
+.card>.banner.warn:first-child{border-bottom-color:var(--warn)}
 
 .tabs{display:flex;gap:4px;padding:0 30px;box-shadow:inset 0 -1px 0 var(--line);overflow:auto hidden}
 .tab{appearance:none;background:none;border:0;border-bottom:2px solid transparent;
@@ -2021,7 +2044,8 @@ button.cc:hover{background:color-mix(in srgb,var(--crit) 12%,var(--surface))}
 @media (prefers-reduced-motion:reduce){.sit.flash{animation:none;outline:2px solid var(--acc)}}
 
 @media (max-width:900px){
- .kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .digest-overview{grid-template-columns:minmax(0,1fr);gap:24px}
+ .kpis{gap:24px}
  .today{grid-template-columns:minmax(0,1fr)}
  .sch-body{grid-template-columns:minmax(0,1fr)}
  .col-main{border-right:0;border-bottom:1px solid var(--line)}
@@ -2032,7 +2056,13 @@ button.cc:hover{background:color-mix(in srgb,var(--crit) 12%,var(--surface))}
  .hero{padding:24px 20px 18px}
  h1{font-size:23px}
  .card>.banner{margin:0 20px 16px}
- .kpi{padding:16px 18px 18px}.kpi .v b{font-size:28px}
+ .digest-overview{padding:0 20px 24px}
+ .kpi .v b{font-size:40px}
+ .deadline-counts{gap:2px 10px}
+ .view-toolbar{flex-wrap:wrap;gap:0;padding-right:0}
+ .view-toolbar .tabs{flex-basis:100%}
+ .view-toolbar .switch{margin:8px 20px 12px 0;margin-left:auto}
+ .card>.banner:first-child{padding:8px 20px}
  .tabs{padding:0 12px}
  .col-main,.col-side,.pad{padding:24px 18px 30px}
  .act{padding:16px}

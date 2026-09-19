@@ -562,9 +562,9 @@ def main() -> int:
               and s["projects_open"] == len(model["projects"]))
         check("다시 요약 버튼 없음", "다시 요약" not in out)
         check("마지막 정리 = 추출 결과 저장 시각 (실행 기록이 없어도)",
-              '마지막 정리 <b class="num">09/11 09:00</b>' in out)
+              '마지막 <b class="num">09/11 09:00</b>' in out)
         check("다음 자동 정리 시각 (12:00 기준 → 13:00)",
-              '다음 자동 정리 <b class="num">13:00</b>' in out)
+              '다음 <b class="num">13:00</b>' in out)
         from nwmail.dashboard import next_full_run
         late = next_full_run(datetime(2026, 9, 11, 9, 30, tzinfo=timezone.utc))   # 18:30 KST
         check("17시 이후면 다음 날 09:00", (late.day, late.hour) == (12, 9), str(late))
