@@ -81,6 +81,7 @@ def main() -> int:
         hdr("[2] 로컬 서버")
         page = Path(tmp) / "dashboard.html"
         page.write_text("<!doctype html><title>대시보드</title>", encoding="utf-8")
+        (Path(tmp) / "usage.html").write_text("<!doctype html><title>토큰 사용 현황</title>", encoding="utf-8")
         server = make_server(0, page, fb)
         port = server.server_address[1]
         threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -105,6 +106,11 @@ def main() -> int:
             status, headers, raw = req("GET", "/", tok=None)
             check("대시보드 페이지 (캐시 안 함)", status == 200 and "대시보드" in raw.decode()
                   and headers.get("Cache-Control") == "no-store")
+            status, headers, raw = req("GET", "/usage.html", tok=None)
+            check("토큰 사용 현황 페이지 (대시보드 옆 파일 그대로)",
+                  status == 200 and "토큰 사용 현황" in raw.decode()
+                  and headers.get("Content-Type", "").startswith("text/html"))
+            check("없는 페이지는 404", req("GET", "/secrets.html", tok=None)[0] == 404)
             check("켜짐 확인은 토큰 없이", req("GET", "/api/ping", tok=None)[0] == 204)
             check("localhost 주소도 허용", req("GET", "/", host=f"localhost:{port}", tok=None)[0] == 200)
             check("다른 Host 로 오면 거부 (DNS 리바인딩)",

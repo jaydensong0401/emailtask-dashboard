@@ -3,19 +3,24 @@
 정적 HTML 한 장으로 끝나도록 CSS·JS 를 모두 인라인한다. 외부 리소스를 부르지
 않으므로 사내망/오프라인에서도 열리고, 메일 내용이 PC 밖으로 나가지 않는다.
 
-완료 체크는 브라우저 localStorage 에 저장한다. 업무 ID 가 (스레드, 종류, 내용)
-기반으로 고정돼 있어서 대시보드를 다시 생성해도 체크가 유지된다.
-다른 브라우저에서 열거나 사이트 데이터를 지우면 초기화된다.
+완료·제외·업무삭제는 로컬 서버의 feedback.db에 저장한다. 오늘/프로젝트의
+동일 업무는 공통 ID로 연결하므로 재생성하거나 브라우저를 바꿔도 상태가 유지된다.
+예전 localStorage 완료 기록은 서버에서 열 때 가져온다.
 """
 from __future__ import annotations
 
-import hashlib
 import html
 import json
 from datetime import date, datetime, timedelta, timezone
+from email.utils import getaddresses
+from urllib.parse import quote
 
-from .extract import load_all
-from .feedback import DUE_YEARS, LABELS, MARKS, REASONS, FeedbackStore, mark_active
+from .client import INBOX_NAMES
+from .extract import PROMPT_VERSION, load_all, render_thread
+from .feedback import (
+    DUE_YEARS, EXTRACT_EXCLUSION_REASONS, LABELS, MARKS, REASONS,
+    FeedbackError, FeedbackStore, excludes_analysis, mark_active,
+)
 from .filters import block_overview, load_filters, sender_domain
 from .mailtext import snippet  # noqa: F401 (테스트에서 사용)
 from .projects import (
@@ -23,6 +28,32 @@ from .projects import (
     skip_extract, title_key, work_title,
 )
 from .store import Store, window_start
+from .tasklinks import task_id, task_links
+from .usage import ERROR_KINDS
+from .usage import summary as usage_summary
+
+USAGE_PAGE = "usage.html"               # 토큰 사용 현황 페이지 (대시보드 옆에 같이 놓인다)
+# 파비콘: 봉투(메일) + 체크 배지(업무 정리 끝). 색은 대시보드 강조색·주의색 그대로 쓴다.
+# 바탕이 츠에 타일을 깔아 브라우저 탭이 밝든 어둡든 같이 보이고, 파일 하나로 열어도 나오도록 data URI 로 심는다.
+FAVICON = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+    '<rect width="32" height="32" rx="7.5" fill="#1f6f6a"/>'
+    '<rect x="3.5" y="8" width="20" height="14.5" rx="2.5" fill="#fdfcf9"/>'
+    '<path d="M4.6 9.6 13.5 16l8.9-6.4" fill="none" stroke="#1f6f6a" stroke-width="2.4"'
+    ' stroke-linejoin="round" stroke-linecap="round"/>'
+    '<circle cx="23.5" cy="23.5" r="8.5" fill="#1f6f6a"/>'
+    '<circle cx="23.5" cy="23.5" r="6.8" fill="#eb6834"/>'
+    '<path d="m20.4 23.7 2.2 2.2 4.1-4.6" fill="none" stroke="#fff" stroke-width="2.6"'
+    ' stroke-linecap="round" stroke-linejoin="round"/></svg>')
+
+
+def _head(title: str) -> str:
+    """두 페이지가 같이 쓰는 <head>. 아이콘은 파일 하나로 열어도 보이게 data URI."""
+    return ('<!doctype html><html lang="ko"><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width, initial-scale=1">'
+            f'<link rel="icon" href="data:image/svg+xml,{quote(FAVICON, safe="")}">'
+            f'<title>{esc(title)}</title><style>{CSS}</style></head>')
+
 
 KST = timezone(timedelta(hours=9))     # 한국은 서머타임이 없어 고정 오프셋으로 충분
 UNCLASSIFIED = "미분류"
@@ -36,6 +67,8 @@ WEEKDAYS = "월화수목금토일"
 DUE_KEEP_DAYS = 30                      # 최근 N일 창 밖 대화의 기한 있는 할 일은 마감이 이만큼 지나면 뺀다
 SCHEDULE_WEEK = 7                       # 일정 탭 '7일 안' 과 탭 숫자의 기준
 SCHEDULE_CAP = 3                        # 달력 한 칸에 펼쳐 둘 할 일 수 (넘치면 +N건)
+SAME_WORK_MIN = 0.6                     # 카드에서 같은 일로 묶을 문구 겹침 비율
+ADOPT_MIN = 0.6                         # 문구가 바뀐 같은 일로 보고 표시를 옮길 겹침 비율
 # 일정 탭 달력에 표시하는 관공서 공휴일 · 대체공휴일 · 선거일. 음력 명절은 Windows 음력 달력
 # (KoreanLunisolarCalendar)로 계산했다. 임시공휴일은 정해지면 더하고, 2028년부터는 해마다 추가한다.
 HOLIDAYS = {
@@ -59,12 +92,6 @@ URGENCY_RANK = {"high": 0, "medium": 1, "low": 2}
 
 def esc(value) -> str:
     return html.escape("" if value is None else str(value), quote=True)
-
-
-def task_id(thread_key: str, kind: str, text: str) -> str:
-    """내용 기반 고정 ID. 재생성해도 같은 업무는 같은 ID → 완료 체크 유지."""
-    raw = f"{thread_key}\x1f{kind}\x1f{(text or '').strip()}"
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
 
 
 def parse_dt(value) -> datetime | None:
@@ -198,17 +225,15 @@ def _schedule_items(open_actions: list[dict], projects: list[dict], stale_tasks:
                     done: list[dict]) -> list[dict]:
     """일정 탭에 올릴 할 일: 남은 내 할 일(기한이 없어도) + 기한 있는 남은 프로젝트 할 일 + 기한 있는 완료한 일.
 
-    프로젝트 할 일은 진행 중 프로젝트 것만 넣고, 같은 대화의 내 할 일과 사실상 같은 일이면 뺀다.
+    프로젝트 할 일은 진행 중 프로젝트 것만 넣고, 내 할 일과 공통 ID로 연결됐으면 뺀다.
     기한순(없으면 맨 뒤) → 남은 일 → 내 할 일 → 긴급도 순. 페이지 JS 의 byDue 와 같은 순서다.
     """
-    mine: dict[str, list[str]] = {}
-    for a in open_actions:
-        mine.setdefault(a["thread"]["key"], []).append(a["text"])
-    tasks = [t for p in projects if p["pstate"] == "open" for i in p["items"]
+    mine = {a["id"] for a in open_actions}
+    tasks = [t for p in projects if p["pstate"] in ("open", "delayed") for i in p["items"]
              for ts in i["roles"].values() for t in ts if open_task(t)] + stale_tasks
     rows = list(open_actions) + [
         t for t in tasks if iso_day(t["deadline"]["raw"])
-        and not any(_same_work(t["text"], x) for x in mine.get(t["thread"]["key"], ()))]
+        and t["id"] not in mine]
     rows += [d for d in done if iso_day(d["deadline"]["raw"])]
     return sorted(rows, key=lambda r: (iso_day(r["deadline"]["raw"]) or "9999", not open_task(r),
                                        r.get("kind") == "task", URGENCY_RANK.get(r.get("urgency"), 1)))
@@ -227,6 +252,18 @@ def dropped_task(item: dict) -> bool:
     return state_label(item) in ("excluded", "deleted")
 
 
+def project_progress(items: list[dict], ready: bool, mark: dict | None) -> dict:
+    """공통 ID는 한 번만 센다. 미추출 대화가 있으면 빈 목록을 완료로 오인하지 않는다."""
+    unique = {i["id"]: i for i in items}
+    remaining = [i for i in unique.values() if open_task(i)]
+    total = sum(not dropped_task(i) for i in unique.values())
+    state = (mark or {}).get("label")
+    if not state:
+        state = ("delayed" if any(i["deadline"]["level"] == "overdue" for i in remaining)
+                 else "done" if ready and not remaining else "open")
+    return {"state": state, "total": total, "open": len(remaining)}
+
+
 def client_slots(rules) -> dict[str, int]:
     """색은 고객사를 따라간다 (세부 프로젝트는 고객사 색). projects.json 순서로 고정 배정한다."""
     return {c: i + 1 for i, c in enumerate(rules.clients[:MAX_SLOTS])}
@@ -238,7 +275,122 @@ def _received_at(mails: list[dict]) -> datetime | None:
                default=None)
 
 
+FIX_TYPES = ("개발", "디자인", "데이터")      # _role_tag 가 역할 뒤에 붙이는 수정 종류
+
+
+def _plain_text(row: dict) -> str:
+    """표시 기록의 문구에서 앞에 붙은 역할 태그를 걷어낸다.
+
+    예전 기록은 화면의 .t 를 통째로 긁어 저장해서 '기타ATR 투어…' 처럼 역할이 문구 앞에 붙어 있다
+    (지금은 _state_attrs 의 data-text 로 문구만 싣는다). 걷어낸 쪽이 늘 맞지는 않으므로
+    ('개발계에 반영' 처럼 문구가 역할 이름으로 시작할 수 있다) 비교할 때 원문과 함께 쓴다.
+    """
+    text = (row.get("text") or "").strip()
+    role = row.get("role") or ""
+    if not role or (row.get("kind") or "me") != "task":
+        return text
+    for tag in [f"{role}·{f}" for f in FIX_TYPES] + [role]:
+        if text.startswith(tag):
+            return text[len(tag):].strip()
+    return text
+
+
+def adopt_marks(feedback: FeedbackStore, extractions: dict, last_seen: dict[str, str],
+                states: dict[str, dict]) -> dict[str, dict]:
+    """문구가 바뀌어 떨어져 나간 완료 · 제외 표시를 지금 할 일에 다시 이어붙인다.
+
+    할 일 ID 는 (대화, 종류, 문구)로 만들기 때문에(task_id), 업무 정리를 다시 돌려 같은 일의
+    문구가 조금이라도 달라지면 표시가 떨어져 나가고 끝낸 일이 '남은 일'로 다시 올라온다.
+
+    표시한 뒤 그 대화에 새로 받은 메일이 없으면 달라진 것은 문구뿐이므로 표시를 새 ID 로 옮긴다.
+    새 메일이 있으면 같은 일을 다시 요청받은 것일 수 있으므로 옮기지 않는다. 그런 할 일은 남은
+    일로 그대로 두고 '전에 처리한 일과 비슷하다'고만 알려, 사람이 보고 판단하게 한다.
+
+    states 는 그 자리에서 고친다. 돌려주는 값은 {지금 할 일 ID: 비슷한 표시 기록}.
+    """
+    live: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    for key, data in extractions.items():
+        if not isinstance(data, dict):
+            continue
+        for kind, field in (("me", "my_actions"), ("task", "tasks")):
+            for it in data.get(field) or []:
+                if isinstance(it, dict) and (text := (it.get("text") or "").strip()):
+                    live.setdefault((key, kind), []).append((task_id(key, kind, text), text))
+
+    live_ids = {tid for items in live.values() for tid, _ in items}
+    orphans: dict[tuple[str, str], list[dict]] = {}
+    for m in states.values():
+        if m["task_id"] not in live_ids and m.get("thread_key"):
+            orphans.setdefault((m["thread_key"], m.get("kind") or "me"), []).append(m)
+
+    similar: dict[str, dict] = {}
+    for spot, marks in orphans.items():
+        items = [(tid, text) for tid, text in live.get(spot, ()) if tid not in states]
+        pairs = [(r, m["task_id"], tid, text)
+                 for m in marks for tid, text in items
+                 if (r := max(work_ratio(m.get("text") or "", text),
+                              work_ratio(_plain_text(m), text))) >= ADOPT_MIN]
+        taken_marks: set[str] = set()
+        taken_tasks: set[str] = set()
+        for _, old, new, text in sorted(pairs, key=lambda p: -p[0]):
+            if old in taken_marks or new in taken_tasks:
+                continue        # 표시 하나에 할 일 하나 (겹침이 큰 짝부터 가져간다)
+            taken_marks.add(old)
+            taken_tasks.add(new)
+            mark = states[old]
+            if (last_seen.get(spot[0]) or "") > (mark.get("labeled_at") or ""):
+                similar[new] = mark
+                continue
+            try:
+                moved = feedback.move(old, new, text)
+            except FeedbackError:
+                continue        # 형식이 이상한 옛 기록은 건드리지 않는다
+            if moved:
+                states[new] = moved
+                states.pop(old, None)
+    return similar
+
+
 # ── 데이터 모델 ─────────────────────────────────────────────────────────────
+def recipient_alerts(store: Store, states: dict[str, dict], me: str) -> list[dict]:
+    """제외 표시 뒤 받은메일함의 To에 본인 주소가 포함된 최신 메일을 대화마다 알린다."""
+    if not me.strip():
+        return []
+    excluded = {}
+    for state in states.values():
+        at = parse_dt(state.get("labeled_at"))
+        if not excludes_analysis(state) or not at:
+            continue
+        key = store._current_key(state["thread_key"])
+        excluded[key] = min(excluded.get(key, at), at)
+    if not excluded:
+        return []
+    alerts = []
+    inboxes = {name.casefold() for name in INBOX_NAMES}
+    for thread in store.threads(None, keys=list(excluded)):
+        candidates = []
+        for mail in thread["mails"]:
+            at = parse_dt(mail.get("sent_at"))
+            if (mail.get("is_mine") or (mail.get("folder") or "").casefold() not in inboxes
+                    or not at or at <= excluded[thread["thread_key"]]):
+                continue
+            try:
+                raw = json.loads(mail.get("to_addrs") or "[]")
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(raw, list) or not all(isinstance(a, str) for a in raw):
+                continue
+            if me.strip().casefold() in {addr.casefold() for _, addr in getaddresses(raw)}:
+                candidates.append(mail)
+        if candidates:
+            mail = max(candidates, key=lambda m: parse_dt(m["sent_at"]))
+            alerts.append({"thread_key": thread["thread_key"], "uid": mail["uid"],
+                           "subject": mail.get("subject") or thread["subject"],
+                           "at": mail["sent_at"],
+                           "sender": mail.get("from_name") or mail.get("from_email") or ""})
+    return sorted(alerts, key=lambda a: parse_dt(a["at"]), reverse=True)
+
+
 def build_model(store: Store, me: str, today: date | None = None,
                 now: datetime | None = None, window_days: int = 7,
                 feedback: FeedbackStore | None = None) -> dict:
@@ -255,7 +407,26 @@ def build_model(store: Store, me: str, today: date | None = None,
     rules = load_rules()
     slots = client_slots(rules)
     extractions = load_all(store)
+    identity_threads = store.threads(window_days=window_days, now=now, keys=list(extractions)) if extractions else []
+    links = task_links(extractions, [me, *_my_names(identity_threads)])
+    linked_actions = {v["task_id"]: v for v in links.values()}
+    if feedback:
+        feedback.link_tasks(links)
+
+    def identity(key: str, kind: str, text: str) -> str:
+        original = task_id(key, kind, text)
+        return links.get(original, {}).get("task_id", original)
+
     states = feedback.states() if feedback else {}
+    # 문구가 바뀌어 떨어져 나간 표시를 먼저 이어붙인다 (states 를 고치고, 새 메일이 온 뒤라
+    # 옮기지 않은 것은 '비슷한 일' 로만 알려 준다)
+    similar = (adopt_marks(feedback, extractions, store.last_received(), states)
+               if feedback else {})
+    marked: dict[str, list[dict]] = {}          # 대화별 표시 기록 (업무 정리에 보내는 크기 계산용)
+    for mk in states.values():
+        marked.setdefault(store._current_key(mk.get("thread_key") or ""), []).append(mk)
+    analysis_excluded = {key for key, items in marked.items()
+                         if any(excludes_analysis(state) for state in items)}
     dues = feedback.dues() if feedback else {}
     thread_marks = feedback.marks("thread") if feedback else {}
     project_marks = feedback.marks("project") if feedback else {}
@@ -266,7 +437,8 @@ def build_model(store: Store, me: str, today: date | None = None,
     unanswered: list[dict] = []
     handled: list[dict] = []
     direct_threads: list[dict] = []
-    extracted = new_threads = excluded = 0
+    sizes: dict[str, dict] = {}            # 대화별 지금 크기 (업무 정리에 보내는 글자 수) — 토큰 사용 현황
+    extracted = new_threads = excluded = window_mails = 0
 
     def slot_of(project: str) -> int:
         """예전 표시 기록의 프로젝트 이름('루미' 등)도 지금 규칙의 고객사 색으로."""
@@ -302,6 +474,7 @@ def build_model(store: Store, me: str, today: date | None = None,
             "summary": (data or {}).get("summary", ""),
             "status": (data or {}).get("status", ""),
             "snippet": snippet(last.get("body")), "extracted": bool(data),
+            "preview": snippet(last.get("body"), limit=len(last.get("body") or "")),
             "project": name,
         }
 
@@ -317,14 +490,15 @@ def build_model(store: Store, me: str, today: date | None = None,
             # 소속은 메일 주소로 확인되면 그걸, 아니면 모델이 적은 회사명을 쓴다
             org = people.get(person_key(assignee)) or canonical_org(
                 task.get("assignee_org"), rules)
-            tid = task_id(t["thread_key"], "task", text)
+            tid = identity(t["thread_key"], "task", text)
+            linked = links.get(task_id(t["thread_key"], "task", text), {})
             out.append({
                 "id": tid, "text": text, "kind": "task",
                 "role": role, "fix": fix, "rslot": rules.roles.index(role) + 1,
                 "assignee": assignee, "org": org,
-                "deadline": due_info(task.get("deadline", ""), dues.get(tid), today),
+                "deadline": due_info(linked.get("deadline", task.get("deadline", "")), dues.get(tid), today),
                 "project": name, "slot": slot,
-                "state": states.get(tid), "thread": th,
+                "state": states.get(tid), "similar": similar.get(tid), "thread": th,
             })
         return out
 
@@ -339,8 +513,9 @@ def build_model(store: Store, me: str, today: date | None = None,
             out.append({
                 "id": aid, "text": text, "kind": "me",
                 "urgency": urg if urg in URGENCY_RANK else "medium",
-                "deadline": due_info(act.get("deadline", ""), dues.get(aid), today),
-                "project": name, "slot": slot, "thread": th,
+                "deadline": due_info(linked_actions.get(aid, {}).get("deadline", act.get("deadline", "")),
+                                     dues.get(aid), today),
+                "project": name, "slot": slot, "similar": similar.get(aid), "thread": th,
             })
         return out
 
@@ -358,10 +533,17 @@ def build_model(store: Store, me: str, today: date | None = None,
         extracted += bool(data)
         excluded += skipped
 
-        client, name, _ = classify(t["subject"], received[0].get("from_email", ""),
-                                   (data or {}).get("project", ""), rules)
+        client, name, basis = classify(t["subject"], received[0].get("from_email", ""),
+                                       (data or {}).get("project", ""), rules)
         name = name or UNCLASSIFIED
-        th = thread_view(t, data, name, is_new)
+        th = dict(thread_view(t, data, name, is_new), basis=basis,
+                  analysis_excluded=t["thread_key"] in analysis_excluded)
+        window_mails += sum(not m.get("is_mine") and (m.get("sent_at") or "") >= cutoff for m in mails)
+        if not skipped and t["thread_key"] not in analysis_excluded:
+            # 업무 정리에 실제로 보내는 글자 수 ('처리한 일' 까지 포함해야 실제와 맞는다)
+            sizes[t["thread_key"]] = {"chars": len(render_thread(t, me, marks=marked.get(t["thread_key"]))),
+                                      "mails": t["mail_count"],
+                                      "subject": t["subject"], "project": name}
 
         p = project(name, client)
         p["threads"].append(th)
@@ -410,7 +592,7 @@ def build_model(store: Store, me: str, today: date | None = None,
     keep_from = (today - timedelta(days=DUE_KEEP_DAYS)).isoformat()
 
     def still_due(key: str, kind: str, text: str, deadline) -> bool:
-        tid = task_id(key, kind, text)
+        tid = identity(key, kind, text)
         return tid not in states and iso_day(
             dues[tid]["due"] if tid in dues else str(deadline or "")) >= keep_from
 
@@ -454,7 +636,12 @@ def build_model(store: Store, me: str, today: date | None = None,
         # 프로젝트 완료는 표시한 뒤 새 메일을 받으면 풀려 진행 중으로 돌아온다
         received = p["received"].isoformat() if p["received"] else ""
         p["mark"] = mark_active(project_marks.get(p["name"]), received)
-        p["pstate"] = p["mark"]["label"] if p["mark"] else "open"
+        p["ready"] = bool(p["threads"]) and all(t["extracted"] for t in p["threads"])
+        own = [dict(a, state=states.get(a["id"])) for a in my_actions if a["project"] == p["name"]]
+        p["progress_items"] = {i["id"]: {"state": state_label(i), "deadline": i["deadline"]["raw"]}
+                               for i in tasks + own}
+        p["progress"] = project_progress(tasks + own, p["ready"], p["mark"])
+        p["pstate"] = p["progress"]["state"]
         p["received_at"] = received
     # 고객사(설정 순서) → 새 메일 → 최근 순. 고객사 안에서 기본 프로젝트(기타)와 미분류는 뒤로
     rank = {c: i for i, c in enumerate(rules.clients)}
@@ -486,15 +673,20 @@ def build_model(store: Store, me: str, today: date | None = None,
     # 따르고(pstate), 창 밖에만 있는 프로젝트는 새 메일이 없으니 표시가 그대로 유효하다
     pstates = {p["name"]: p["pstate"] for p in ordered}
     stale_tasks = [t for t in stale_tasks if pstates.get(
-        t["project"], "done" if t["project"] in project_marks else "open") == "open"]
+        t["project"], "done" if t["project"] in project_marks else "open") in ("open", "delayed")]
     live = {a["id"]: a for a in my_actions}
     live.update({t["id"]: t for p in ordered for i in p["items"]
                  for ts in i["roles"].values() for t in ts})
     live.update({t["id"]: t for t in stale_tasks})
+    # 한 업무의 오늘 카드에는 내 할 일의 문구/종류를 유지한다 (되돌리면 오늘 목록으로 복귀).
+    live.update({a["id"]: a for a in my_actions})
     open_actions = [a for a in my_actions if a["id"] not in states]
     done: list[dict] = []
     dropped: list[dict] = []
-    for row in feedback.recent(LABELED_DAYS, now) if feedback else []:
+    recorded = {r["task_id"]: r for r in feedback.recent(LABELED_DAYS, now)} if feedback else {}
+    # 분석 제외는 기간이 지나도 되돌릴 수 있어야 한다.
+    recorded.update({tid: row for tid, row in states.items() if excludes_analysis(row)})
+    for row in sorted(recorded.values(), key=lambda r: r["labeled_at"], reverse=True):
         item = dict(live.get(row["task_id"])
                     or _snapshot_action(row, slot_of, today, rules.roles, dues), state=row)
         (done if row["label"] == "done" else dropped).append(item)
@@ -514,6 +706,7 @@ def build_model(store: Store, me: str, today: date | None = None,
     levels = [a["deadline"]["level"] for a in open_actions]
     return {
         "generated_at": now, "today": today, "me": me, "window_days": window_days,
+        "task_aliases": {k: v["task_id"] for k, v in links.items()},
         "me_names": _my_names(threads),
         "last_sync": store.last_run_at("sync", offset=0),
         "last_extract": latest(store.last_run_at("extract", offset=0),
@@ -523,9 +716,14 @@ def build_model(store: Store, me: str, today: date | None = None,
         "dropped_actions": dropped, "schedule": schedule,
         "unanswered": unanswered, "handled": handled,
         "direct_threads": direct_threads, "blocked": blocked,
+        "recipient_alerts": recipient_alerts(store, states, me),
         "recent_decisions": recent[:RECENT_DECISIONS],
         "filters": filters, "blocking": block_overview(store, me), "roles": list(rules.roles),
+        # 맨 아래 2depth: 분류 규칙(지금 설정 그대로) · 토큰 사용 현황(llm_calls 기록) · 대화별 지금 크기
+        "rules": rules, "sizes": sizes,
+        "usage": usage_summary(store, now=now, slot_times=FULL_RUN_TIMES),
         "stats": {"threads": len(threads), "blocked": len(blocked), "rules": len(filters),
+                  "window_mails": window_mails,
                   "history": sum(t["mail_count"] - t["recent_count"] for t in threads),
                   "unanswered": len(unanswered), "new": new_threads,
                   "extracted": extracted, "excluded": excluded,
@@ -536,10 +734,10 @@ def build_model(store: Store, me: str, today: date | None = None,
                   **{f"sched_{k}": v for k, v in sched.items()},
                   "sched_badge": sched["overdue"] + sched["today"] + sched["week"],
                   "oldest_wait": max((u["waited"] for u in unanswered), default=0),
-                  "named_projects": sum(p["name"] != UNCLASSIFIED and p["pstate"] == "open"
+                  "named_projects": sum(p["name"] != UNCLASSIFIED and p["pstate"] in ("open", "delayed")
                                         for p in ordered),
                   **{f"projects_{k}": sum(p["pstate"] == k for p in ordered)
-                     for k in ("open", *MARKS["project"])}},
+                     for k in ("open", "delayed", *MARKS["project"])}},
     }
 
 
@@ -566,6 +764,8 @@ def _badges(th: dict) -> str:
     if th.get("stale"):
         out.append('<span class="chip" title="최근 메일이 없는 대화 — 기한이 있어 완료 · 제외할 때까지 남겨 둡니다">'
                    '지난 대화</span>')
+    if th.get("analysis_excluded"):
+        out.append('<span class="chip">AI 분석 제외</span>')
     return "".join(out)
 
 
@@ -580,6 +780,20 @@ def _who(item: dict) -> str:
 def _role_tag(item: dict) -> str:
     label = item["role"] + (f'·{item["fix"]}' if item.get("fix") else "")
     return f'<b class="rtag rt{item.get("rslot", 0)}">{esc(label)}</b>'
+
+
+def _repeat_tag(item: dict) -> str:
+    """전에 완료 · 제외한 일과 문구가 비슷할 때 붙인다.
+
+    표시한 뒤 새 메일이 온 대화라 표시를 그대로 옮기지 않은 것이다 (adopt_marks).
+    같은 일을 다시 요청받았을 수도, 이어지는 다른 일일 수도 있어 사람이 보고 정한다.
+    """
+    mark = item.get("similar")
+    if not mark:
+        return ""
+    label = LABELS.get(mark.get("label") or "", "처리")
+    return (f'<span class="sim" title="{esc((mark.get("labeled_at") or "")[:10])} {esc(label)}: '
+            f'{esc(mark.get("text") or "")}">전에 {esc(label)}한 일과 비슷</span>')
 
 
 def _controls(item: dict) -> str:
@@ -603,6 +817,9 @@ def _state_attrs(item: dict) -> dict:
         "data-pname": item.get("project", ""), "data-deadline": d["raw"],
         "data-urgency": item.get("urgency", ""), "data-role": item.get("role", ""),
         "data-assignee": item.get("assignee", ""),
+        # 문구는 여기서 싣는다. 화면의 .t 안에는 역할 태그가 같이 들어 있어
+        # textContent 를 긁으면 "기타…" 처럼 태그가 문구 앞에 붙어 기록된다
+        "data-text": item.get("text", ""),
         # 일정 탭에서 기한을 바꾸면 페이지가 세 탭의 같은 할 일을 함께 고친다 (메일 기한은 되돌릴 값)
         "data-mdl": d.get("mail", d["raw"]), "data-manual": "1" if d.get("manual") else "",
     }
@@ -621,6 +838,7 @@ def _task(item: dict, show_src: bool = True) -> str:
     return (
         "<li " + " ".join(f'{k}="{esc(v)}"' for k, v in attrs.items()) + ">"
         f'<div class="th"><p class="t">{_role_tag(item)}{esc(item["text"])}</p>'
+        f'{_repeat_tag(item)}'
         f'{_badges(item["thread"]) if item["thread"]["new"] else ""}</div>'
         f'<div class="meta">{"".join(meta)}{_controls(item)}</div></li>'
     )
@@ -633,7 +851,8 @@ def _thread_row(th: dict, extra: str = "") -> str:
         f'{_badges(th)}</div><div class="meta"><span>{esc(th["from"])}</span>'
         f'<span class="num">{esc(fmt_dt(th["last_at"]))}</span>'
         f'<span class="num">{_count_label(th)}</span>{extra}</div>'
-        + (f'<p class="snip">{esc(body)}</p>' if body else "") + "</li>"
+        + (f'<p class="snip" data-preview="{esc(th["summary"] or th.get("preview") or body)}" '
+           f'data-preview-label="{"메일 요약" if th["summary"] else "최근 메일 내용"}">{esc(body)}</p>' if body else "") + "</li>"
     )
 
 
@@ -682,7 +901,7 @@ def _decisions(decisions: list[dict], merged: bool) -> str:
 def _work_item(item: dict, roles: list[str]) -> str:
     """업무 묶음 하나 = 프로젝트 안의 카드 한 장.
 
-    머리 띠(업무명 · 진행 상태 · 남은 할 일 · 메일 수) 아래에 할 일 목록(역할 태그, 역할 순) ·
+    머리 띠(업무명 · 진행 상태 · 완료한 할 일 · 메일 수) 아래에 할 일 목록(역할 태그, 역할 순) ·
     결정사항 · 원본 대화를 둔다. 역할별 열로 나누면 쓰지 않는 역할 칸이 공백으로 남아 한 목록으로 둔다.
     원본 대화는 카드 안쪽 상자에 넣어, 대화 제목이 따로 된 업무처럼 읽히지 않게 한다.
     """
@@ -704,8 +923,8 @@ def _work_item(item: dict, roles: list[str]) -> str:
     else:
         chip = ""
     info = []
-    if extracted and shown:     # 남은 할 일 / 전체는 표시할 때마다 페이지가 다시 센다 (data-wopen · data-wtotal)
-        info.append(f'남은 할 일 <b class="num" data-wopen>{sum(open_task(t) for t in shown)}</b>'
+    if extracted and shown:     # 완료 / 전체는 표시할 때마다 페이지가 다시 센다 (data-wdone · data-wtotal)
+        info.append(f'완료 <b class="num" data-wdone>{sum(state_label(t) == "done" for t in shown)}</b>'
                     f'/<span data-wtotal>{len(shown)}</span>')
     info.append(f'대화 {len(threads)}개 · 메일 {mails}통' if merged else f'메일 {mails}통')
     parts = [
@@ -754,7 +973,7 @@ KEBAB = ('<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" foc
          '<circle cx="8" cy="13" r="1.5"/></svg>')
 WAIT_MENU = (("answered", "답변완료"), ("deleted", "삭제"))
 # 상태에 맞는 것만 보인다 (진행 중: 완료 · 삭제 / 완료 · 삭제: 되돌리기)
-PROJECT_MENU = (("done", "프로젝트 완료"), ("deleted", "삭제"), ("open", "진행 중으로 되돌리기"))
+PROJECT_MENU = (("done", "직접 완료 처리"), ("deleted", "삭제"), ("open", "자동 분류로 되돌리기"))
 
 
 def _kebab(items, attr: str, label: str) -> str:
@@ -780,14 +999,18 @@ def _mark_text(state: dict | None, target: str) -> str:
 def _project_attrs(p: dict) -> str:
     """프로젝트 카드 · 진행 줄이 함께 쓰는 표시 상태. 버튼을 누르면 페이지가 둘을 같이 고친다."""
     return (f'data-pstate="{p["pstate"]}" data-latest="{esc(p["received_at"])}" '
+            f'data-manual-state="{esc((p["mark"] or {}).get("label", ""))}" data-ready="{int(p["ready"])}" '
             f'data-at="{esc((p["mark"] or {}).get("labeled_at", ""))}"')
 
 
 def _project_card(p: dict, roles: list[str]) -> str:
-    """접고 펴는 프로젝트 한 칸. 접힌 머리말에 이름 · 남은 할 일 · 최근 메일 날짜."""
-    meta = (f'업무 {len(p["items"])} · 남은 할 일 '
-            f'<b class="num" data-open="{esc(p["name"])}">{p["open_count"]}</b>/'
-            f'<span data-ptotal>{p["task_count"]}</span> · '
+    """접고 펴는 프로젝트 한 칸. 접힌 머리말에 이름 · 완료한 할 일 · 최근 메일 날짜.
+
+    완료 / 전체로 적는다 (오늘 탭 프로젝트별 진행 막대와 같은 뜻). 전체에서 제외 · 업무삭제한 일은 뺀다.
+    """
+    meta = (f'업무 {len(p["items"])} · 완료 '
+            f'<b class="num" data-done="{esc(p["name"])}">{p["progress"]["total"] - p["progress"]["open"]}</b>/'
+            f'<span data-ptotal>{p["progress"]["total"]}</span> · '
             f'결정 {p["decision_count"]} · 대화 {len(p["threads"])}')
     if p["latest"]:
         meta += f' · 최근 <span class="num">{p["latest"].astimezone(KST):%m/%d}</span>'
@@ -810,10 +1033,12 @@ def _projects_tab(m: dict) -> str:
     if not projects:
         return '<div class="pad"><p class="empty-state">스레드가 없습니다.</p></div>'
     views = [
-        ("open", "진행 중", "새 메일이 온 프로젝트부터 · 오른쪽 메뉴에서 완료하면 완료 보기로 옮겨집니다.",
+        ("open", "진행 중", "남은 할 일이 없으면 완료로, 마감이 지난 할 일이 있으면 지연으로 자동 분류됩니다. 업무 정리 전인 프로젝트는 진행 중에 표시됩니다.",
          "진행 중인 프로젝트가 없습니다."),
-        ("done", "완료", "완료한 뒤 새 메일을 받으면 진행 중으로 돌아옵니다.",
+        ("done", "완료", "남은 할 일이 없는 프로젝트입니다. 새 할 일이 생기거나 완료를 되돌리면 진행 중 또는 지연으로 이동합니다.",
          "완료한 프로젝트가 없습니다."),
+        ("delayed", "지연", "마감이 지난 미완료 업무가 있는 프로젝트입니다. 해당 업무를 처리하거나 기한을 변경하면 자동으로 다시 분류됩니다.",
+         "지연된 프로젝트가 없습니다."),
         ("deleted", "삭제", "대시보드에서만 숨깁니다. 메일은 지우지 않고, 새 메일이 와도 숨겨 둡니다.",
          "삭제한 프로젝트가 없습니다."),
     ]
@@ -844,66 +1069,86 @@ def _projects_tab(m: dict) -> str:
 
 
 # ── 오늘 탭 (1a: 할 일 · 진행 / 답을 기다리는 메일 · 결정사항) ──────────────────
+def _next_label(m: dict) -> str:
+    """다음 자동 정리 시각: 오늘이면 '17:00', 아니면 '내일 09:00'."""
+    nxt = m["next_extract"]
+    return f"{nxt:%H:%M}" if nxt.date() == m["generated_at"].astimezone(KST).date() else f"내일 {nxt:%H:%M}"
+
+
 def _hero(m: dict) -> str:
     s = m["stats"]
     wait = f'답 기다리는 메일 <em class="c-warn"><span id="hl-wait">{s["unanswered"]}</span>건</em>'
     title = (f'처리할 일이 <em class="c-acc"><span id="hl-me">{s["my_open"]}</span>건</em>, {wait}'
              if s["extracted"] else f'업무 정리 전 · {wait}')
-    local = m["generated_at"].astimezone(KST)
-    nxt = m["next_extract"]
-    nxt_label = f"{nxt:%H:%M}" if nxt.date() == local.date() else f"내일 {nxt:%H:%M}"
-    sync = fmt_dt(m["last_sync"]) if m["last_sync"] else "없음"
-    ext = fmt_dt(m["last_extract"]) if m.get("last_extract") else "없음"
     d = m["today"]
+    local = m["generated_at"].astimezone(KST)
     return (
         '<header class="hero"><div class="hero-t">'
         f'<p class="eyebrow">MAIL DIGEST · {d:%m/%d} {WEEKDAYS[d.weekday()]}</p>'
-        f'<h1>{title}</h1>'
-        f'<p class="sub" title="생성 {local:%Y-%m-%d %H:%M}">{esc(m["me"])} · 최근 '
-        f'{m["window_days"]}일 대화 {s["threads"]}건 · 마지막 동기화 {esc(sync)}</p></div>'
-        '<div class="hero-side"><div class="tools">'
-        '<label class="pill switch">완료 숨기기<input type="checkbox" id="hide-done" role="switch">'
-        '</label><button type="button" id="theme" class="pill" aria-label="테마 전환">테마: 시스템'
-        '</button></div>'
-        f'<p class="runs">마지막 정리 <b class="num">{esc(ext)}</b> · '
-        f'다음 자동 정리 <b class="num">{esc(nxt_label)}</b></p></div></header>'
+        f'<h1 class="sr-only">{title}</h1>'
+        f'<p class="sub" title="생성 {local:%Y-%m-%d %H:%M}">{esc(m["me"])}</p></div>'
+        f'<div class="hero-acts">{_usage_link(m)}'
+        '<button type="button" id="theme" class="pill" aria-label="테마 전환">테마: 시스템</button>'
+        '</div></header>'
     )
+
+
+def _usage_link(m: dict) -> str:
+    """테마 버튼 옆에 놓이는 토큰 사용 현황 버튼. 누르면 따로 만든 페이지로 간다.
+
+    버튼에 오늘 쓴 양과 어제보다 얼마나 늘었는지를 같이 적어, 들어가 보지 않아도 대충 알 수 있게 한다.
+    """
+    u = m["usage"]
+    if not u["has_data"]:
+        chip = '<span class="pill-n">기록 전</span>'
+    else:
+        d = u["delta"]["today"]
+        chip = (f'<span class="pill-n num">오늘 {_tok(u["today"]["tokens"])}</span>'
+                + (f'<span class="pill-d {d["dir"]}">{_arrow(d)}{_tok(abs(d["tokens"]))}</span>'
+                   if d["dir"] in ("up", "down") else ""))
+    return (f'<a class="pill usage-link" href="{USAGE_PAGE}">토큰 사용 현황{chip}'
+            '<span class="pill-go" aria-hidden="true"></span></a>')
 
 
 def _kpis(m: dict) -> str:
     s = m["stats"]
     todo = s["threads"] - s["excluded"]
-    left = todo - s["extracted"]
-
-    def tile(label: str, value: str, unit: str, caption: str) -> str:
-        unit_html = f'<span class="u">{unit}</span>' if unit else ""
-        return (f'<div class="kpi"><p class="l">{label}</p><p class="v">{value}{unit_html}</p>'
-                f'<p class="c">{caption}</p></div>')
-
+    left = max(0, todo - s["extracted"])
     if s["extracted"]:
-        me = tile("내 할 일", f'<b class="num" id="kpi-me">{s["my_open"]}</b>', "건 남음",
-                  f'오늘 마감 <span id="kpi-today">{s["due_today"]}</span> · '
-                  f'지난 마감 <span id="kpi-over">{s["overdue"]}</span> · '
-                  f'오늘 완료 <span id="kpi-done">{s["done_today"]}</span>')
+        value = f'<b class="num" id="kpi-me">{s["my_open"]}</b><span class="u">건 남음</span>'
+        caption = (f'<span>지난 마감 <span id="kpi-over">{s["overdue"]}</span></span>'
+                   f'<span>오늘 마감 <span id="kpi-today">{s["due_today"]}</span></span>'
+                   f'<span>오늘 완료 <span id="kpi-done">{s["done_today"]}</span></span>')
     else:
-        me = tile("내 할 일", '<b class="num">—</b>', "", "업무 정리 대기")
-    if s["oldest_wait"]:
-        wait_caption = f'가장 오래된 건 {s["oldest_wait"]}일 경과'
-    else:
-        wait_caption = "모두 오늘 온 메일" if s["unanswered"] else "모두 답했습니다"
-    summary_caption = f"남은 {left}건은 다음 정리 때" if left > 0 else "모두 정리됨"
-    if s["excluded"]:
-        summary_caption += f' · 정기 메일 {s["excluded"]}건 제외'
+        value = '<b class="num">—</b>'
+        caption = '업무 정리 대기'
+    wait_caption = (f'가장 오래된 건 {s["oldest_wait"]}일 경과' if s["oldest_wait"] else
+                    '모두 오늘 온 메일' if s["unanswered"] else '모두 답했습니다')
     warn = " c-warn" if s["unanswered"] else ""
-    return '<div class="kpis">' + "".join([
-        me,
-        tile("미응답", f'<b class="num{warn}" id="kpi-wait">{s["unanswered"]}</b>', "건 대기",
-             f'<span id="kpi-wait-c">{wait_caption}</span>'),
-        tile("진행 프로젝트", f'<b class="num" id="kpi-proj">{s["named_projects"]}</b>', "개",
-             f'새로 온 대화 {s["new"]}건'),
-        tile("요약 완료", f'<b class="num">{s["extracted"]}<span class="den">/{todo}</span></b>',
-             "", summary_caption),
-    ]) + "</div>"
+    local = m["generated_at"].astimezone(KST)
+    nxt = m["next_extract"]
+    nxt_label = f"{nxt:%H:%M}" if nxt.date() == local.date() else f"내일 {nxt:%H:%M}"
+    sync = fmt_dt(m["last_sync"]) if m["last_sync"] else "없음"
+    ext = fmt_dt(m["last_extract"]) if m.get("last_extract") else "없음"
+    summary = f"남은 {left}건은 다음 정리 때" if left else "모두 정리됨"
+    excluded = f' · 정기 메일 {s["excluded"]}건 제외' if s["excluded"] else ""
+    return (
+        '<section class="digest-overview" aria-label="메일 업무 요약"><div class="work-overview">'
+        '<div class="kpis"><div class="kpi"><h2 class="l">내 할 일</h2>'
+        f'<p class="v">{value}</p><p class="c deadline-counts">{caption}</p></div>'
+        '<div class="kpi"><h2 class="l">답장 대기</h2>'
+        f'<p class="v"><b class="num{warn}" id="kpi-wait">{s["unanswered"]}</b><span class="u">건 대기</span></p>'
+        f'<p class="c" id="kpi-wait-c">{wait_caption}</p></div></div>'
+        f'<p class="project-summary">진행 프로젝트 <b class="num" id="kpi-proj">{s["named_projects"]}</b>개'
+        f' · 새로 온 대화 <b class="num">{s["new"]}건</b></p></div>'
+        '<aside class="system-summary" aria-labelledby="system-summary-title">'
+        '<h2 id="system-summary-title">자동 정리</h2><dl>'
+        f'<div><dt>동기화</dt><dd class="num">{esc(sync)}</dd></div>'
+        f'<div><dt>정리</dt><dd>마지막 <b class="num">{esc(ext)}</b> · 다음 <b class="num">{esc(nxt_label)}</b></dd></div>'
+        f'<div><dt>요약</dt><dd><span class="num">{s["extracted"]}<span class="den">/{todo}</span></span> · {summary}</dd></div>'
+        f'<div><dt>범위</dt><dd>최근 {m["window_days"]}일 대화 {s["threads"]}건{excluded}</dd></div>'
+        '</dl></aside></section>'
+    )
 
 
 def _status_text(state: dict | None) -> str:
@@ -938,16 +1183,21 @@ def _day_label(raw: str) -> str:
     return f"{d.month}/{d.day}({WEEKDAYS[d.weekday()]})"
 
 
-def _same_work(a: str, b: str) -> bool:
-    """사실상 같은 일인가: 띄어쓰기를 뺀 두 글자 조각이 짧은 쪽 기준 60% 이상 겹친다.
-
-    업무 정리가 내 할 일을 남의 업무로 한 번 더 적는 경우가 있어, 카드의 다른 담당자 줄에서 뺀다.
-    """
+def work_ratio(a: str, b: str) -> float:
+    """두 업무 문구가 얼마나 같은가: 띄어쓰기를 뺀 두 글자 조각의 짧은 쪽 기준 겹침 비율."""
     def grams(s: str) -> set[str]:
         s = "".join(s.split()).lower()
         return {s[i:i + 2] for i in range(len(s) - 1)}
     x, y = grams(a), grams(b)
-    return bool(x and y) and len(x & y) / min(len(x), len(y)) >= 0.6
+    return len(x & y) / min(len(x), len(y)) if x and y else 0.0
+
+
+def _same_work(a: str, b: str) -> bool:
+    """사실상 같은 일인가.
+
+    업무 정리가 내 할 일을 남의 업무로 한 번 더 적는 경우가 있어, 카드의 다른 담당자 줄에서 뺀다.
+    """
+    return work_ratio(a, b) >= SAME_WORK_MIN
 
 
 def _act_context(m: dict) -> dict[str, dict]:
@@ -976,8 +1226,10 @@ def _act_details(a: dict, ctx: dict) -> str:
         status = th.get("status") or ""
         chip = (f'<span class="stt {THREAD_STATUS.get(status, "s-ing")}">{esc(status)}</span>'
                 if status else "")
+        preview = (f' data-preview="{esc(th.get("preview") or body)}" data-preview-label="최근 메일 내용"'
+                   if not th.get("summary") else "")
         rows.append(f'<div><dt>{"현황" if th.get("summary") else "최근 메일"}</dt>'
-                    f'<dd>{chip}{esc(body)}</dd></div>')
+                    f'<dd{preview}>{chip}{esc(body)}</dd></div>')
     others = sorted((t for t in ctx.get("others", ()) if not _same_work(t["text"], a["text"])),
                     key=lambda t: t["deadline"]["sort"])
     if others:
@@ -1046,6 +1298,7 @@ def _act(a: dict, order: int | None = None, ctx: dict | None = None, details: bo
     tags.append(_badges(th))
     tags.append(f'<span class="pj"><i class="sw s{a["slot"]}" aria-hidden="true"></i>'
                 f'{esc(a["project"])}</span>')
+    tags.append(_repeat_tag(a))
     attrs = {**_state_attrs(a), "data-order": "" if order is None else str(order),
              "data-new": "1" if th.get("new") else ""}
     return (
@@ -1134,7 +1387,8 @@ def _progress(m: dict) -> str:
     """프로젝트별 할 일 완료 비율. 표시 기록(feedback.db)으로 채우고, 눌렀을 때 페이지가 고친다."""
     rows = []
     for p in m["projects"]:
-        total = p["task_count"]
+        total = p["progress"]["total"]
+        remaining = p["progress"]["open"]
         if p["name"] == UNCLASSIFIED and not total:
             continue
         rows.append(
@@ -1144,15 +1398,19 @@ def _progress(m: dict) -> str:
             f'<span class="pn"><span class="pname">{esc(p["name"])}'
             f'</span><span class="pc num">대화 {len(p["threads"])} · 결정 {p["decision_count"]}'
             '</span></span><span class="track" aria-hidden="true"><span class="fill" '
-            f'style="width:{round((total - p["open_count"]) * 100 / total) if total else 0}%">'
+            f'style="width:{round((total - remaining) * 100 / total) if total else 0}%">'
             '</span></span>'
             f'<span class="pv num" data-total="{total}">'
-            f'{f"{total - p['open_count']}/{total}" if total else "할 일 없음"}'
+            f'{f"{total - remaining}/{total}" if total else "할 일 없음"}'
             f'</span></button>{_kebab(PROJECT_MENU, "pmark", p["name"] + " 메뉴")}</div>')
     if not rows:
         return ""
+    tabs = "".join(f'<button type="button" data-progress-view="{key}" aria-pressed="{str(key == "open").lower()}">'
+                   f'{label} <b class="num" id="progress-cnt-{key}">{sum(p["pstate"] == key for p in m["projects"] if p["name"] != UNCLASSIFIED or p["progress"]["total"])}</b></button>'
+                   for key, label in (("open", "진행 중"), ("done", "완료"), ("delayed", "지연")))
     return ('<div class="sec-h gap"><h2>프로젝트별 진행</h2>'
             '<span class="sec-m">완료한 할 일 / 전체</span></div>'
+            f'<div class="seg progress-tabs" role="group" aria-label="프로젝트별 진행 보기">{tabs}</div>'
             f'<div class="progs">{"".join(rows)}</div>'
             f'<p class="empty-state" id="progs-empty"{" hidden" if m["stats"]["projects_open"] else ""}>'
             '진행 중인 프로젝트가 없습니다.</p>')
@@ -1469,7 +1727,7 @@ BLOCK_JS = r"""
   var root=document.getElementById('blk');if(!root)return;
   var msg=document.getElementById('blk-msg'),KEY='nwmail.blkmsg';
   function conf(){try{return JSON.parse(document.getElementById('nw-conf').textContent)}catch(e){return {}}}
-  function served(c){return !!c.sameOrigin||(!!c.port&&/^https?:$/.test(location.protocol)&&location.port===String(c.port));}
+  function served(c){return !!c.port&&/^https?:$/.test(location.protocol)&&location.port===String(c.port);}
   function say(text,bad){msg.textContent=text;msg.hidden=false;msg.classList.toggle('bad',!!bad);}
   function lock(on,title){
     root.querySelectorAll('[data-fop] button,button[data-fop],.fadd input,.fadd select,.cand select')
@@ -1540,14 +1798,544 @@ BLOCK_JS = r"""
 """
 
 
+# ── 맨 아래 2depth: 메일 분류 규칙 · 토큰 사용 현황 ─────────────────────────────
+# 1depth 두 줄은 접혀 있어도 요약 한 줄이 보이고, 누르면 2depth 보기(오늘 탭의 할 일 · 완료 · 제외 전환과 같은 모양)가
+# 펼쳐진다. 펼친 줄과 고른 보기는 브라우저에 기억한다 (페이지 JS). 규칙은 지금 설정(projects.json · 차단 규칙 ·
+# 코드의 기준값)을 그대로 읽어 보여 주고, 토큰은 usage.py 가 mail.db 에 남긴 호출 기록으로 센다.
+BASIS = (("keyword", "제목 키워드"), ("model", "업무 정리(LLM)가 고른 것"), ("tag", "제목 태그 · 회사"),
+         ("domain", "발신 도메인"), ("unknown", "미분류"))
+ROLE_ORDER = ("수정", "개발", "디자인", "기타")          # 업무 정리 프롬프트가 역할을 판정하는 순서
+ROLE_NOTES = {"수정": "이미 만든 페이지 · 시안 · 배너 · 운영 데이터를 요청대로 고침 (피드백 반영, 문구 변경, 기한 연장, 회차 삭제)",
+              "개발": "새 페이지 · 기능 구현, API 연동, 개발계 · 운영계 반영",
+              "디자인": "새 시안 · 이미지 · 배너 제작",
+              "기타": "검토 · 확인, 콘텐츠 수급, 일정 조율, 회신, 테스트 (예전에 기획 · 마케팅으로 뽑힌 일 포함)"}
+TOKEN_CELLS = ("내 할 일", "프로젝트 할 일", "결정사항", "대화 요약", "메일에서 뽑은 기한", "LLM 이 고른 세부 프로젝트")
+FREE_CELLS = ("메일 받기", "차단", "대화 묶기", "키워드 · 태그 · 도메인 분류", "답을 기다리는 메일", "일정 달력",
+              "진행 막대")
+HEAVY_TOP = 5
+
+
+def _tok(n) -> str:
+    """토큰 수를 짧게: 950 · 12.3K · 1.24M."""
+    n = int(n or 0)
+    if n < 1000:
+        return f"{n:,}"
+    if n < 1_000_000:
+        return f"{n / 1000:.1f}".rstrip("0").rstrip(".") + "K"
+    return f"{n / 1_000_000:.2f}".rstrip("0").rstrip(".") + "M"
+
+
+def _usd(x) -> str:
+    """API 환산 금액 (참고용, 실제 청구 없음)."""
+    x = float(x or 0)
+    return "$0" if not x else "<$0.01" if x < 0.01 else f"${x:,.2f}"
+
+
+def _pct(x) -> str:
+    """늘고 줌을 퍼센트로: +11% · -4% · +1,100%."""
+    v = round(float(x or 0) * 100)
+    return f"{v:+,}%"
+
+
+def _arrow(d: dict) -> str:
+    return "▲ " if d["dir"] == "up" else "▼ " if d["dir"] == "down" else ""
+
+
+def _delta_text(d: dict, prev_label: str) -> str:
+    """증가량 한 줄: '▲ 12.3K · +11% 어제보다'. prev_label 은 견준 기간 이름.
+
+    이전 기간에 쓴 게 없으면 몇 % 늘었다고 말할 수 없으므로 '이번이 처음'이라고만 쓴다.
+    """
+    if d["dir"] == "new":
+        return f'<span class="it-d new">{esc(prev_label)} 기록 없음</span>'
+    if d["dir"] == "flat":
+        return (f'<span class="it-d flat" title="{esc(prev_label)} {_tok(d["prev"])} 토큰">'
+                f'{esc(prev_label)}와 같음</span>')
+    pct = f' · {_pct(d["pct"])}' if d["pct"] is not None else ""
+    return (f'<span class="it-d {d["dir"]}" title="{esc(prev_label)} {_tok(d["prev"])} 토큰">'
+            f'{_arrow(d)}{_tok(abs(d["tokens"]))}{pct}'
+            f'<span class="it-w"> {esc(prev_label)}보다</span></span>')
+
+
+def _chars(n) -> str:
+    """보내는 글자 수: 4.1만 자 · 870자."""
+    n = int(n or 0)
+    return (f"{n / 10000:.1f}".rstrip("0").rstrip(".") + "만 자") if n >= 10000 else f"{n:,}자"
+
+
+def _bar_row(label: str, value: float, top: float, text: str, mute: bool = False,
+             tag: str = "div", title: str = "") -> str:
+    """가로 막대 한 줄: 이름 · 막대(가장 큰 값 기준) · 값. 막대는 꾸밈이라 값은 늘 글자로 쓴다.
+
+    label · text 는 이미 이스케이프한 HTML 이다.
+    """
+    pct = max(0, min(100, round(value * 100 / top))) if top else 0
+    tip = f' title="{esc(title)}"' if title else ""
+    return (f'<{tag} class="ib"{tip}><span class="ib-l">{label}</span>'
+            f'<span class="track" aria-hidden="true"><span class="fill{" mute" if mute else ""}" '
+            f'style="width:{pct}%"></span></span><span class="ib-n num">{text}</span></{tag}>')
+
+
+def _window_threads(m: dict) -> list[dict]:
+    return [th for p in m["projects"] for th in p["threads"]]
+
+
+def _il(rows) -> str:
+    """규칙 목록: (이름, 설명, 숫자) 줄. 설명 · 숫자는 이미 이스케이프한 HTML."""
+    return '<ul class="il">' + "".join(
+        f'<li><b>{esc(name)}</b><span class="d">{desc}</span><span class="v num">{val}</span></li>'
+        for name, desc, val in rows) + "</ul>"
+
+
+def _rules_line(m: dict) -> str:
+    """1depth 요약 한 줄 (접혀 있을 때도 보인다)."""
+    prot = (m.get("blocking") or {}).get("protected", [])
+    fs = m["filters"]
+    on = sum(f.enabled for f in fs)
+    state = "" if not fs or on == len(fs) else " (꺼짐)" if not on else f" (사용 {on})"
+    unknown = sum(th.get("basis") == "unknown" for th in _window_threads(m))
+    return (f'보호 도메인 {len(prot)} · 차단 규칙 {len(fs)}{state} · 세부 프로젝트 {len(m["rules"].client_of)}'
+            f' · 최근 {m["window_days"]}일 미분류 {unknown}건')
+
+
+def _rules_flow(m: dict) -> str:
+    """한눈에 보기: 메일 한 통이 대시보드에 오기까지. 단계마다 규칙/LLM, 이번 주 숫자, 고치는 곳."""
+    s, w = m["stats"], m["window_days"]
+    unknown = sum(th.get("basis") == "unknown" for th in _window_threads(m))
+    steps = (
+        ("메일 받기", "규칙",
+         "10분마다 받은메일함을 읽습니다 (직전 평일부터, 월요일은 금요일부터). 같은 대화의 과거 메일과 내 답장은 "
+         "메일함 전체에서 찾습니다.",
+         f"최근 {w}일 받은 메일 {s['window_mails']}통", ".env 의 WINDOW_DAYS · auto.py"),
+        ("차단", "규칙",
+         "보낸 주소 · 보낸 도메인 · 제목 규칙에 걸리면 숨깁니다 (지우지 않음). 보호 도메인 메일은 어떤 규칙에도 "
+         "걸리지 않습니다.",
+         f"차단 {s['blocked']}통 · 규칙 {s['rules']}개", "차단됨 탭"),
+        ("대화 묶기", "규칙",
+         "답장 헤더(References · In-Reply-To)로 같은 대화를 잇습니다. 헤더 없는 답장(RE:)은 90일 안에 회신 표식을 "
+         "뗀 제목이 완전히 같은 메일만 붙입니다.",
+         f"대화 {s['threads']}건 · 과거 메일 {s['history']}통 포함", "store.py · context.py"),
+        ("프로젝트 분류", "규칙 + LLM",
+         "제목 키워드 → 업무 정리(LLM)가 고른 세부 프로젝트 → 제목 태그 · 회사 → 발신 도메인 순으로, 먼저 맞는 것으로 "
+         "정합니다. 대시보드를 만들 때마다 다시 정해서 규칙을 바꿔도 다시 추출하지 않습니다.",
+         f"미분류 {unknown}건", "projects.json"),
+        ("업무 정리", "LLM",
+         "09 · 13 · 17시에 내용이 바뀐 대화만 Claude 에 보내 요약 · 결정사항 · 할 일 · 내 할 일 · 기한을 뽑습니다. "
+         "정기 메일은 보내지 않습니다.",
+         f"정리 {s['extracted']}/{s['threads'] - s['excluded']} · 정기 메일 {s['excluded']}건 제외",
+         f"extract.py 프롬프트 (버전 {PROMPT_VERSION})"),
+        ("화면 분류", "규칙",
+         "답을 기다리는 메일, 마감 묶음, 역할 태그, 같은 메일명 묶기를 대시보드를 만들 때 정합니다.",
+         f"답 대기 {s['unanswered']}건 · 기한 지남 {s['overdue']}건", "dashboard.py"),
+    )
+    return '<ol class="iflow">' + "".join(
+        f'<li class="if"><div class="if-h"><span class="if-n num">{i}</span><b>{esc(name)}</b>'
+        f'<span class="itag{" llm" if "LLM" in how else ""}">{esc(how)}</span>'
+        f'<span class="if-c num">{esc(count)}</span></div>'
+        f'<p class="if-d">{esc(desc)}</p><p class="if-w">고치는 곳 · {esc(where)}</p></li>'
+        for i, (name, how, desc, count, where) in enumerate(steps, 1)) + "</ol>"
+
+
+def _rules_block(m: dict) -> str:
+    """차단: 보호 도메인 · 규칙 · 차단 후보 근거. 고치는 건 차단됨 탭에서 (여기는 보기만)."""
+    info = m.get("blocking") or {}
+    kinds, counts = info.get("kinds") or {}, info.get("counts") or {}
+    pds = "".join(f'<span class="chip">{esc(p["domain"])}{" · 고정" if p["fixed"] else ""}</span>'
+                  for p in info.get("protected", []))
+    rows = "".join(
+        f'<tr><td>{esc(f.category)}</td><td>{esc(kinds.get(f.kind, f.kind))}</td>'
+        f'<td><code>{esc(f.pattern)}</code></td><td class="num">{counts.get(f.id, 0)}</td>'
+        f'<td>{"사용" if f.enabled else "꺼짐"}</td></tr>'
+        for f in m["filters"]) or '<tr><td colspan="5" class="empty">등록된 규칙 없음</td></tr>'
+    by_cat: dict[str, int] = {}
+    for b in m["blocked"]:
+        cat = b.get("filter_category") or "기타"
+        by_cat[cat] = by_cat.get(cat, 0) + 1
+    cats = " · ".join(f"{c} {n}" for c, n in by_cat.items())
+    reasons = (
+        ("광고 표기", "제목의 <code>(광고)</code> · <code>[광고]</code> (정보통신망법상 광고 메일 표기) → 제목 규칙", "광고·홍보"),
+        ("뉴스레터", "수신거부 헤더, 뉴스레터성 제목, news · marketing 발송 주소", "뉴스레터·구독"),
+        ("행사 안내", "설명회 · 세미나 · 웨비나 · 참석 안내 제목", "행사·안내"),
+        ("자동 발송", "noreply · notification 주소에서 2통 이상", "자동 알림"),
+        ("올리지 않음", "보호 도메인, 우리 회사와 메일을 주고받은 상대, 이미 규칙이 있거나 후보에서 뺀 곳", ""),
+    )
+    return (
+        '<h4 class="ih">보호 도메인<span class="ih-m">어떤 규칙에도 차단하지 않음 · 고정은 코드(filters.py)에 있어 뺄 수 없음</span></h4>'
+        f'<div class="ichips">{pds}</div>'
+        f'<h4 class="ih">차단 규칙 {len(m["filters"])}개<span class="ih-m">최근 {m["window_days"]}일 차단 '
+        f'{len(m["blocked"])}통{f" ({esc(cats)})" if cats else ""} · 보낸 주소(포함) · 보낸 도메인(하위 포함) · 제목(포함)</span></h4>'
+        '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>구분</th><th>종류</th><th>문구</th>'
+        f'<th class="num">차단</th><th>상태</th></tr></thead><tbody>{rows}</tbody></table></div>'
+        '<h4 class="ih">차단 후보를 올리는 근거<span class="ih-m">제안만 하고 자동으로 차단하지 않음</span></h4>'
+        + _il((name, desc, esc(cat)) for name, desc, cat in reasons)
+        + f'<p class="ifoot"><span>지금 차단 후보 <b class="num">{len(info.get("candidates", []))}</b>건</span>'
+        '<a class="btn" href="#blocked">차단됨 탭에서 고치기</a></p>'
+    )
+
+
+def _rules_proj(m: dict) -> str:
+    """프로젝트: 판정 순서와 근거별 대화 수(누르면 제목), projects.json 의 세부 프로젝트 표."""
+    rules, w = m["rules"], m["window_days"]
+    threads = _window_threads(m)
+    groups = {key: [th for th in threads if th.get("basis") == key] for key, _ in BASIS}
+    top = max((len(v) for v in groups.values()), default=0)
+    rows = []
+    for i, (key, label) in enumerate(BASIS, 1):
+        ths = groups[key]
+        num = "" if key == "unknown" else f'<span class="ib-o num">{i}</span>'
+        items = "".join(f'<li><span class="ib-s">{esc(th["subject"])}</span>'
+                        f'<span class="ib-p">{esc(th["project"])}</span></li>' for th in ths)
+        rows.append(f'<details class="ib-d ib-{key}">'
+                    + _bar_row(num + esc(label), len(ths), top, f"{len(ths)}건", mute=key == "unknown",
+                               tag="summary", title="눌러서 대화 제목 보기")
+                    + f'<ul class="ib-list">{items or "<li>없음</li>"}</ul></details>')
+
+    raw = rules.raw or {}
+    alias = raw.get("aliases") or {}
+
+    def names(n: str) -> list[str]:
+        return [n] + [v for v in alias.get(n, []) if v != n]
+    tags: dict[str, list[str]] = {}
+    for org, proj in rules.org_projects.items():
+        tags.setdefault(rules.resolve(proj) or proj, []).extend(f"[{v}]" for v in names(org))
+    for client in rules.clients:
+        tags.setdefault(rules.defaults[client], []).extend(f"[{v}]" for v in names(client))
+    doms: dict[str, list[str]] = {}
+    for dom, name in rules.domain_hints.items():
+        if target := rules.resolve(name):
+            doms.setdefault(target, []).append(dom)
+    count = {p["name"]: len(p["threads"]) for p in m["projects"]}
+    body = []
+    for client in rules.clients:
+        default = rules.defaults[client]
+        for p in [x for x in rules.keywords if rules.client_of.get(x) == client and x != default] + [default]:
+            how = []
+            if kws := rules.keywords.get(p):
+                how.append("키워드 " + " · ".join(kws))
+            if p in tags:
+                how.append("태그 " + " ".join(dict.fromkeys(tags[p])))
+            if p in doms:
+                how.append("도메인 " + " · ".join(doms[p]))
+            badge = ' <span class="ih-m">기본</span>' if p == default else ""
+            if p == default:
+                how.append("키워드로 못 정한 이 고객사 대화")
+            body.append(f'<tr><td class="nw">{esc(client)}</td><td class="nw">{esc(p)}{badge}</td>'
+                        f'<td>{esc(" / ".join(how))}</td><td class="num">{count.get(p, 0)}</td></tr>')
+    outside = [p for p in m["projects"] if p["name"] not in rules.client_of and p["name"] != UNCLASSIFIED]
+    extra = ("".join(f'<span class="chip">{esc(p["name"])} · {len(p["threads"])}</span>' for p in outside)
+             or '<span class="ih-m">없음</span>')
+
+    def chips(xs) -> str:
+        return "".join(f'<span class="chip">{esc(x)}</span>' for x in xs)
+    return (
+        f'<h4 class="ih">판정 순서<span class="ih-m">위에서 먼저 맞는 것으로 정함 · 최근 {w}일 대화 {len(threads)}건 · '
+        '줄을 누르면 대화 제목</span></h4>'
+        f'<div class="ib-set">{"".join(rows)}</div>'
+        '<h4 class="ih">세부 프로젝트<span class="ih-m">projects.json · 코드 수정 없이 고침 · 띄어쓰기 · 대소문자 무시, '
+        '위에 적힌 프로젝트가 먼저</span></h4>'
+        '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>고객사</th><th>세부 프로젝트</th>'
+        f'<th>이렇게 정함</th><th class="num">최근 {w}일</th></tr></thead><tbody>{"".join(body)}</tbody></table></div>'
+        '<h4 class="ih">설정 밖 이름<span class="ih-m">설정에 없는 태그나 LLM 이 지은 이름 → 기타 묶음 (대화 수)</span></h4>'
+        f'<div class="ichips">{extra}</div>'
+        '<h4 class="ih">말머리 · 추출 제외<span class="ih-m">말머리는 프로젝트로 보지 않음 · 추출 제외 제목은 Claude 에 '
+        '보내지 않음 (대시보드에는 보임)</span></h4>'
+        f'<div class="ichips">{chips(raw.get("non_project_tags") or [])}</div>'
+        f'<div class="ichips gap">{chips(f"추출 제외: {x}" for x in rules.extract_skip)}</div>'
+    )
+
+
+def _rules_task(m: dict) -> str:
+    """할 일 · 역할: 업무 정리(LLM)가 뽑는 것과 역할 판정 순서, 담당자 · 소속 · 업무명 묶기."""
+    rules = m["rules"]
+    counts = {r: 0 for r in rules.roles}
+    for p in m["projects"]:
+        for it in p["items"]:
+            for role, ts in it["roles"].items():
+                counts[role] = counts.get(role, 0) + len(ts)
+    order = [r for r in ROLE_ORDER if r in counts] + [r for r in counts if r not in ROLE_ORDER]
+    top = max(counts.values(), default=0)
+    roles = "".join(
+        '<div class="ib-g">'
+        + _bar_row(f'<span class="ib-o num">{i}</span>{esc(r)}', counts[r], top, f"{counts[r]}개",
+                   mute=r == order[-1])
+        + f'<p class="ib-note">{esc(ROLE_NOTES.get(r, ""))}</p></div>'
+        for i, r in enumerate(order, 1))
+    orgs = ("".join(f'<span class="chip">{esc(d)} → {esc(o)}</span>' for d, o in rules.org_domains.items())
+            or '<span class="ih-m">없음</span>')
+    rows = (
+        ("요약 · 상태", "무슨 건이고 어디까지 왔는지 1~2문장, 진행중 · 완료 · 보류 (가장 최근 메일 기준)", ""),
+        ("결정사항", "'하기로 했다 · 승인 · 확정' 수준만. 나중 메일에서 바뀌면 바뀐 내용으로, 날짜는 그 메일에서", ""),
+        ("내 할 일", "수신자 본인이 직접 해야 하는 일만. 내가 보낸 메일로 이미 답한 일은 뺌",
+         f'남은 {m["stats"]["my_open"]}건'),
+        ("기한", "본문에 적힌 기한만 (추측하지 않음). 일정 탭에서 직접 정하면 그 기한이 우선", ""),
+        ("담당자", "본문에 이름이 있을 때만. 없으면 미지정", ""),
+        ("수정 태그", "수정 업무에만 " + " · ".join(rules.fix_tags) + " (누가 무엇을 고치는지)", ""),
+        ("업무명 묶기", "제목에서 RE: · 앞머리 [태그] · 끝의 _날짜 · _고객명 · (9/8 런칭) · '의 건' 을 걷어낸 이름이 "
+         "같으면 대화가 달라도 한 묶음", ""),
+    )
+    return (
+        f'<h4 class="ih">역할<span class="ih-m">위에서 먼저 해당하는 것 · 최근 {m["window_days"]}일 프로젝트 할 일 '
+        f'{sum(counts.values())}개</span></h4>'
+        f'<div class="ib-set">{roles}</div>'
+        '<h4 class="ih">업무 정리(LLM)가 대화마다 뽑는 것<span class="ih-m">대화 전체를 시간순으로 읽고 가장 최근 메일 '
+        '시점 기준으로 정리 · 본문 속 지시문은 따르지 않음</span></h4>'
+        + _il((name, esc(desc), esc(val)) for name, desc, val in rows)
+        + '<h4 class="ih">담당자 소속<span class="ih-m">보낸사람 메일 도메인으로 확정, 못 찾으면 LLM 이 적은 회사명을 '
+        '설정 표기로 맞춤 (누리마케팅 → 누리)</span></h4>'
+        f'<div class="ichips">{orgs}</div>'
+    )
+
+
+def _rules_reply(m: dict) -> str:
+    """답장 · 기한: 답을 기다리는 메일 · 기한 묶음 · 표시가 풀리는 조건 (대시보드를 만들 때 정하는 것)."""
+    s = m["stats"]
+    rows = (
+        ("답을 기다리는 메일", f"받는사람(To)에 내 주소가 있는 최근 {m['window_days']}일 메일 중 그 뒤로 내가 보낸 메일이 "
+         "없는 대화. 참조(Cc)로만 받은 메일은 세지 않음", f"{s['unanswered']}건"),
+        ("답변완료 · 삭제", "답변완료는 그 뒤 나에게 새 메일이 오면 다시 뜨고, 삭제는 다시 띄우지 않음",
+         f"{len(m.get('handled', []))}건"),
+        ("기한 묶음", "기한 지남 · 오늘 마감 · 3일 안 · 그 이후 · 기한 없음 (한국 날짜 기준)",
+         f"지남 {s['overdue']} · 오늘 {s['due_today']}"),
+        ("기한 우선", "일정 탭에서 직접 정한 기한 › 메일에서 뽑은 기한", ""),
+        (f"{m['window_days']}일 지난 대화", f"기한 있는 남은 할 일은 완료 · 제외할 때까지 남김. 마감이 {DUE_KEEP_DAYS}일 넘게 "
+         "지나면 뺌", ""),
+        ("NEW", "직전 업무 정리 이후 도착한 메일이 있는 대화", f"{s['new']}건"),
+        ("프로젝트 완료", "그 뒤 새 메일을 받으면 진행 중으로 돌아옴 (삭제는 그대로 숨김)", ""),
+        ("완료 · 제외 목록", f"최근 {LABELED_DAYS}일 표시한 것. 메일이 와서 할 일 문구가 바뀌면 표시가 풀릴 수 있음", ""),
+    )
+    return _il((name, esc(desc), esc(val)) for name, desc, val in rows)
+
+
+def _usage_line(m: dict) -> str:
+    """토큰 사용 현황 페이지 머리에 쓰는 요약 한 줄 (사용량 · 증가량). HTML 이 아닌 글자."""
+    u = m["usage"]
+    if not u["has_data"]:
+        return f'아직 기록 없음 · 다음 자동 정리({_next_label(m)})부터 호출마다 쌓입니다'
+    t, w, d = u["today"], u["week"], u["delta"]["week"]
+    grew = (f'지난 {u["days"]}일 기록 없음' if d["dir"] == "new" else f'지난 {u["days"]}일과 같음'
+            if d["dir"] == "flat" else
+            f'지난 {u["days"]}일보다 {_arrow(d)}{_tok(abs(d["tokens"]))}'
+            + (f' ({_pct(d["pct"])})' if d["pct"] is not None else ""))
+    return (f'오늘 호출 {t["calls"]}회 · {_tok(t["tokens"])} 토큰 — 최근 {u["days"]}일 {_tok(w["tokens"])} 토큰 · '
+            f'{grew} · API 환산 {_usd(w["cost"])} · 한도 초과 {w["limit"]}회')
+
+
+def _usage_sum(m: dict) -> str:
+    """요약: 오늘 · 최근 7일 · 이번 달, 일별 · 회차별 막대, 한도 초과, 다시 묻지 않은 대화."""
+    u = m["usage"]
+
+    def tile(label: str, b: dict, key: str, prev_label: str) -> str:
+        """칸 하나: 사용량(큰 숫자) 아래에 증가량(직전 같은 길이의 기간과 견준 차이)."""
+        fails = f' · 실패 {b["fails"]}회' if b["fails"] else ""
+        return (f'<div class="itile"><p class="it-l">{label}</p><p class="it-v num">{_tok(b["tokens"])}'
+                f'<span class="it-u">토큰</span></p>'
+                f'<p class="it-g">{_delta_text(u["delta"][key], prev_label)}</p>'
+                f'<p class="it-c">호출 {b["calls"]}회 · API 환산 {_usd(b["cost"])}{fails}</p></div>')
+    t = u["total"]
+    avg = (f'하루 평균 {_tok(t["per_day"])} · {t["span"]}일째' if t["span"] else "아직 없음")
+    tiles = ('<div class="itiles">'
+             + tile("오늘", u["today"], "today", "어제")
+             + tile(f'최근 {u["days"]}일', u["week"], "week", f'지난 {u["days"]}일')
+             + tile(f'이번 달 ({m["today"].month}월)', u["month"], "month", "지난달")
+             + f'<div class="itile"><p class="it-l">누적</p><p class="it-v num">{_tok(t["tokens"])}'
+             f'<span class="it-u">토큰</span></p><p class="it-g"><span class="it-d flat">{esc(avg)}</span></p>'
+             f'<p class="it-c">호출 {t["calls"]:,}회 · API 환산 {_usd(t["cost"])}</p></div>'
+             + "</div>")
+    if not u["has_data"]:
+        return (tiles + '<p class="inote">아직 기록이 없습니다. 업무 정리가 돌 때마다 호출별로 쌓입니다 '
+                f'(다음 자동 정리 {_next_label(m)}). 금액은 구독 사용량을 API 요금으로 바꿔 본 참고값이고 '
+                '실제 청구는 없습니다.</p>')
+    # 일별은 사용량 막대 옆에 하루 전보다 얼마나 늘었는지(증가량)를 같이 적는다
+    top = max((d["tokens"] for d in u["day_list"]), default=0)
+    day_rows, before = [], u["prev"]["day0"]["tokens"]
+    for i, d in enumerate(u["day_list"]):
+        gap = d["tokens"] - (u["day_list"][i - 1]["tokens"] if i else before)
+        chip = (f'<span class="it-d {"up" if gap > 0 else "down"}">'
+                f'{"▲ " if gap > 0 else "▼ "}{_tok(abs(gap))}</span>' if gap and d["tokens"] else "")
+        day_rows.append(_bar_row(
+            f'{d["day"]:%m/%d} {WEEKDAYS[d["day"].weekday()]}'
+            + (' <span class="itag bad">한도 초과</span>' if d["limit"] else ""),
+            d["tokens"], top, f'{_tok(d["tokens"])} · {d["calls"]}회 {chip}'))
+    days = "".join(day_rows)
+    top = max((x["tokens"] for x in u["slots"]), default=0)
+    slots = "".join(_bar_row(esc(x["label"]), x["tokens"], top, f'{_tok(x["tokens"])} · {x["calls"]}회',
+                             mute=x["label"] == "직접 실행") for x in u["slots"])
+    w, r, lim = u["week"], u["runs"], u["limit"]
+    last = r["last"]
+    rows = [
+        ("한도 초과로 실패", (f'최근 {fmt_dt(lim["at"])}' + (f' · {lim["reset"]}에 풀림' if lim["reset"] else "")
+                         + ' · 실패한 대화는 다음 정리 때 다시 보냄') if lim["count"] else "없음",
+         f'{lim["count"]}회'),
+        ("다시 묻지 않은 대화", f'내용이 그대로라 호출 없이 이전 결과를 씀 · 새로 정리 {r["extracted"]}개 · '
+         f'실패 {r["failed"]}개 · 정리 {r["count"]}번에 호출 {r["calls"]}번', f'{r["cached"]}개'),
+        ("토큰 구성", f'입력 {_tok(w["input_tokens"])} · 캐시 쓰기 {_tok(w["cache_write_tokens"])} · 캐시 읽기 '
+         f'{_tok(w["cache_read_tokens"])} · 출력 {_tok(w["output_tokens"])}', ""),
+        ("모델", " · ".join(u["models"]) or "—", ""),
+    ]
+    if last:
+        rows.insert(2, ("마지막 정리", f'{fmt_dt(last["at"])} · 대화 {last["threads"]}개 중 재사용 {last["cached"]} · '
+                         f'새로 {last["extracted"]} · 실패 {last["failed"]}', f'호출 {last["calls"]}번'))
+    return (
+        tiles
+        + f'<h4 class="ih">일별<span class="ih-m">최근 {u["days"]}일 · 토큰 · 호출 수</span></h4>'
+        + f'<div class="ib-set">{days}</div>'
+        + f'<h4 class="ih">회차별<span class="ih-m">최근 {u["days"]}일 합계 · 자동 정리 09 · 13 · 17시와 직접 실행</span></h4>'
+        + f'<div class="ib-set">{slots}</div>'
+        + f'<h4 class="ih">최근 {u["days"]}일</h4>'
+        + _il((name, esc(desc), esc(val)) for name, desc, val in rows)
+        + f'<p class="inote">기록 시작 {esc(fmt_dt(u["first_at"]))} · 금액은 구독 사용량을 API 요금으로 바꿔 본 참고값이고 '
+        '실제 청구는 없습니다. 출력 · 캐시 쓰기는 비싸고 캐시 읽기는 쌉니다.</p>'
+    )
+
+
+def _usage_where(m: dict) -> str:
+    """어디에 쓰나: 용도별, 호출마다 붙는 기본 지시문, 대시보드 칸별, 프로젝트별 · 무거운 대화 (추정)."""
+    u, sizes, w = m["usage"], m.get("sizes") or {}, m["usage"]["days"]
+    top = max((x["tokens"] for x in u["uses"]), default=0)
+    uses = "".join(
+        _bar_row(esc(x["label"]), x["tokens"], top,
+                 f'{_tok(x["tokens"])} · {x["calls"]}회 · {round(x["share"] * 100)}%')
+        for x in u["uses"])
+    probe = u.get("probe")
+    base = (f'약 {_tok(probe["tokens"])} 토큰 — {fmt_dt(probe["at"])} 짧은 확인 호출("OK")로 잰 값. 메일 내용과 별개로 '
+            'Claude Code 가 호출할 때마다 넣는 지시문이라, 대화를 묶어 호출 수를 줄일수록 덜 씁니다'
+            if probe else "짧은 확인 호출(set_token.py)을 하면 여기에 크기가 나옵니다")
+    cells = (("토큰으로 채우는 칸", " · ".join(TOKEN_CELLS), ""),
+             ("토큰 없이 만드는 칸", " · ".join(FREE_CELLS), ""),
+             ("호출마다 붙는 기본 지시문", base, f'{_tok(probe["tokens"])}' if probe else ""))
+
+    # 대화 · 프로젝트별은 추정: 호출 토큰을 그 호출에 담은 대화들의 글자 수 비율로 나눈 값
+    rows: dict[str, dict] = {k: {**v, "tokens": 0, "sent": 0} for k, v in sizes.items()}
+    for key, t in u["threads"].items():
+        row = rows.setdefault(key, {"subject": t["subject"], "project": t["project"], "mails": t["mails"],
+                                    "chars": t["chars"], "tokens": 0, "sent": 0})
+        row["tokens"], row["sent"] = t["tokens"], t["sent"]
+    by_proj: dict[str, int] = {}
+    for row in rows.values():
+        if row["tokens"]:
+            name = row["project"] or UNCLASSIFIED
+            by_proj[name] = by_proj.get(name, 0) + row["tokens"]
+    top = max(by_proj.values(), default=0)
+    projs = "".join(_bar_row(esc(n), v, top, _tok(v), mute=n == UNCLASSIFIED)
+                    for n, v in sorted(by_proj.items(), key=lambda kv: -kv[1]))
+    heavy = sorted(rows.values(), key=lambda r: (-r["tokens"], -r["chars"]))[:HEAVY_TOP]
+    trs = "".join(
+        f'<tr><td class="subj-c" title="{esc(r["subject"])}">{esc(r["subject"])}</td><td>{esc(r["project"])}</td>'
+        f'<td class="num">{r["mails"]}통</td><td class="num">{_chars(r["chars"])}</td>'
+        f'<td class="num">{r["sent"]}번</td><td class="num">{_tok(r["tokens"]) if r["tokens"] else "—"}</td></tr>'
+        for r in heavy) or '<tr><td colspan="6" class="empty">대화 없음</td></tr>'
+    order = "추정 토큰 순" if any(r["tokens"] for r in heavy) else "아직 기록 전이라 지금 크기 순"
+    return (
+        f'<h4 class="ih">용도별<span class="ih-m">최근 {w}일 · 토큰을 쓰는 곳은 이 넷뿐</span></h4>'
+        f'<div class="ib-set">{uses}</div>'
+        '<h4 class="ih">대시보드 칸별</h4>'
+        + _il((name, esc(desc), esc(val)) for name, desc, val in cells)
+        + f'<h4 class="ih">프로젝트별<span class="ih-m">최근 {w}일 · 추정 (한 호출에 대화 여러 개를 묶어 보내서 글자 수 '
+        '비율로 나눔)</span></h4>'
+        + (f'<div class="ib-set">{projs}</div>' if projs else '<p class="inote">아직 기록이 없습니다.</p>')
+        + f'<h4 class="ih">무거운 대화 {HEAVY_TOP}개<span class="ih-m">{order} · 새 메일이 한 통만 와도 대화 전체를 다시 '
+        '보냄 · 정기 메일이면 projects.json 의 extract_skip 에 넣으면 빠짐</span></h4>'
+        '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>대화</th><th>프로젝트</th><th class="num">메일</th>'
+        f'<th class="num">지금 크기</th><th class="num">{w}일 동안 보낸 횟수</th><th class="num">추정 토큰</th>'
+        f'</tr></thead><tbody>{trs}</tbody></table></div>'
+    )
+
+
+def _usage_log(m: dict) -> str:
+    """호출 기록: 최근 호출부터. 입력은 캐시로 읽고 쓴 부분까지 (자세한 구성은 말풍선)."""
+    rows = []
+    for c in m["usage"]["log"]:
+        run = f'자동 {c["slot"]}' if c["trigger"] == "auto" else "직접"
+        size = (f'{c["threads"]} · {c["mails"]}통' if c["threads"] else f'{c["mails"]}통' if c["mails"] else "—")
+        read = c["input_tokens"] + c["cache_read_tokens"] + c["cache_write_tokens"]
+        parts = (f'입력 {c["input_tokens"]:,} · 캐시 쓰기 {c["cache_write_tokens"]:,} · '
+                 f'캐시 읽기 {c["cache_read_tokens"]:,}')
+        if c["ok"]:
+            result = '<span class="ih-m">성공</span>'
+        else:
+            label = ERROR_KINDS.get(c["error_kind"], "오류") + (f' · {c["reset"]} 풀림' if c["reset"] else "")
+            result = f'<span class="itag bad" title="{esc(c["error"])}">{esc(label)}</span>'
+        rows.append(
+            f'<tr><td class="nw"><span class="num">{esc(c["when"])}</span></td><td class="nw">{esc(run)}</td>'
+            f'<td title="{esc(c["model"] or "")}">{esc(c["purpose_label"])}</td><td class="num">{esc(size)}</td>'
+            f'<td class="num" title="{esc(parts)}">{_tok(read) if c["ok"] or read else "—"}</td>'
+            f'<td class="num">{_tok(c["output_tokens"]) if c["ok"] or c["output_tokens"] else "—"}</td>'
+            f'<td class="num">{round(c["seconds"] or 0)}초</td><td class="num">{_usd(c["cost"])}</td>'
+            f'<td>{result}</td></tr>')
+    if not rows:
+        return '<p class="inote">아직 기록이 없습니다. 업무 정리 · 메일 요약 · 토큰 확인을 할 때마다 한 줄씩 쌓입니다.</p>'
+    return ('<div class="tbl-wrap"><table class="tbl"><thead><tr><th>시각</th><th>실행</th><th>용도</th>'
+            '<th class="num">대화 · 메일</th><th class="num">입력</th><th class="num">출력</th>'
+            '<th class="num">걸린 시간</th><th class="num">API 환산</th><th>결과</th></tr></thead>'
+            f'<tbody>{"".join(rows)}</tbody></table></div>'
+            f'<p class="inote">최근 {len(rows)}번 · 입력에 마우스를 올리면 캐시 구성이, 실패에 올리면 메시지가 보입니다.</p>')
+
+
+USAGE_VIEWS = (("sum", "요약", _usage_sum), ("where", "어디에 쓰나", _usage_where),
+               ("log", "호출 기록", _usage_log))
+
+
+def _info_section(m: dict) -> str:
+    """맨 아래 2depth. 1depth 줄(접혀 있어도 요약 한 줄) → 2depth 보기 버튼 → 내용.
+
+    토큰 사용 현황은 따로 만든 페이지(usage.html)로 옮겼다 — 머리말의 '토큰 사용 현황' 버튼.
+    """
+    rows = (
+        ("rules", "메일 분류 규칙", _rules_line(m),
+         (("flow", "한눈에 보기", _rules_flow), ("block", "차단", _rules_block), ("proj", "프로젝트", _rules_proj),
+          ("task", "할 일·역할", _rules_task), ("reply", "답장·기한", _rules_reply))),
+    )
+    out = []
+    for key, title, line, subs in rows:
+        seg = "".join(f'<button type="button" data-sub="{k}" aria-pressed="{"true" if i == 0 else "false"}">'
+                      f'{esc(label)}</button>' for i, (k, label, _) in enumerate(subs))
+        panes = "".join(f'<div class="info-p" data-pane="{k}"{"" if i == 0 else " hidden"}>{fn(m)}</div>'
+                        for i, (k, _, fn) in enumerate(subs))
+        out.append(
+            f'<div class="info-row" data-info="{key}">'
+            f'<button type="button" class="info-h" id="info-h-{key}" aria-expanded="false" '
+            f'aria-controls="info-b-{key}"><span class="info-t">{esc(title)}</span>'
+            f'<span class="info-s">{esc(line)}</span></button>'
+            f'<div class="info-b" id="info-b-{key}" role="region" aria-labelledby="info-h-{key}" hidden>'
+            f'<div class="seg" role="group" aria-label="{esc(title)} 보기">{seg}</div>{panes}</div></div>')
+    return f'<section class="info" aria-label="메일 분류 규칙">{"".join(out)}</section>'
+
+
+def render_usage_html(m: dict) -> str:
+    """토큰 사용 현황 페이지 (usage.html). 대시보드 머리말의 버튼에서 넘어온다.
+
+    대시보드와 같은 CSS·테마를 쓰되, 버튼 기록을 보내지 않으므로 서버 설정도 큰 JS 도 필요 없다.
+    """
+    seg = "".join(f'<button type="button" data-sub="{k}" aria-pressed="{"true" if i == 0 else "false"}">'
+                  f'{esc(label)}</button>' for i, (k, label, _) in enumerate(USAGE_VIEWS))
+    panes = "".join(f'<div class="info-p" data-pane="{k}"{"" if i == 0 else " hidden"}>{fn(m)}</div>'
+                    for i, (k, _, fn) in enumerate(USAGE_VIEWS))
+    local = m["generated_at"].astimezone(KST)
+    return (
+        _head("토큰 사용 현황 · 메일 업무 대시보드")
+        + '<body class="usage-page"><main class="wrap"><div class="card">'
+        '<header class="hero"><div class="hero-t">'
+        f'<a class="back" href="./"><span class="back-a" aria-hidden="true"></span>메일 업무 대시보드</a>'
+        '<h1>토큰 사용 현황</h1>'
+        f'<p class="sub">{esc(_usage_line(m))}</p></div>'
+        '<div class="hero-acts">'
+        '<button type="button" id="theme" class="pill" aria-label="테마 전환">테마: 시스템</button>'
+        '</div></header>'
+        f'<div class="usage-body" data-usage><div class="seg" role="group" aria-label="토큰 사용 현황 보기">'
+        f'{seg}</div>{panes}</div></div>'
+        f'<p class="page-foot">{esc(f"{local:%Y-%m-%d %H:%M}")} 기준 · 자동 정리가 돌 때마다 다시 만들어집니다</p>'
+        f'</main><script>{THEME_JS}{USAGE_JS}</script></body></html>'
+    )
+
+
 def render_html(m: dict, notice: str = "", server: dict | None = None) -> str:
     """server = {"port": 8787, "token": "..."} 이면 버튼 기록을 그 로컬 서버로 보낸다."""
     s = m["stats"]
     conf = {"port": (server or {}).get("port"), "token": (server or {}).get("token", ""),
-            # 클라우드 데모: 페이지를 연 주소의 서버로 기록한다 (127.0.0.1:포트 가 아니어도)
-            "sameOrigin": bool((server or {}).get("same_origin")),
             "labels": LABELS, "reasons": {k: list(v) for k, v in REASONS.items()},
-            "groups": ACT_GROUPS,
+            "analysisExclusions": EXTRACT_EXCLUSION_REASONS,
+            "groups": ACT_GROUPS, "taskAliases": m.get("task_aliases", {}),
+            "projectTasks": {p["name"]: p["progress_items"] for p in m["projects"]},
             "marks": MARKS, "waitPreview": WAIT_PREVIEW, "unclassified": UNCLASSIFIED,
             # 일정 탭: 기한 등급은 서버의 오늘(KST) 기준으로 센다
             "today": m["today"].isoformat(), "week": SCHEDULE_WEEK, "cap": SCHEDULE_CAP,
@@ -1560,9 +2348,19 @@ def render_html(m: dict, notice: str = "", server: dict | None = None) -> str:
                   '<code>python dashboard.py</code></div>')
     if notice:
         banner = f'<div class="banner warn" role="alert">{esc(notice)}</div>' + banner
+    if alerts := m.get("recipient_alerts"):
+        rows = "".join(
+            f'<li><strong>{esc(a["subject"])}</strong>'
+            f'<span>{esc(a["sender"])} · {esc(parse_dt(a["at"]).astimezone(KST).strftime("%m/%d %H:%M"))}</span></li>'
+            for a in alerts)
+        banner = (f'<section class="banner warn recipient-alerts" role="status" aria-label="받는사람 재지정 알림">'
+                  f'<strong>받는사람으로 재지정되었습니다.</strong>'
+                  f'<p>분석에서 제외한 대화 {len(alerts)}건의 새 메일에 받는사람으로 포함되어 있습니다. '
+                  'AI 분석 제외는 유지됩니다. 다시 분석하려면 해당 할 일의 제외·삭제 표시를 되돌리세요.</p>'
+                  f'<ul>{rows}</ul></section>') + banner
 
     tabs = [("tab-today", "오늘", None),
-            ("tab-projects", "프로젝트", s["projects_open"]),
+            ("tab-projects", "프로젝트", s["projects_open"] + s["projects_delayed"]),
             ("tab-schedule", "일정", s["sched_badge"]),
             ("tab-blocked", "차단됨", s["blocked"])]
     tablist = "".join(
@@ -1583,15 +2381,15 @@ def render_html(m: dict, notice: str = "", server: dict | None = None) -> str:
         f'{panels[tid]}</section>' for tid, _, _ in tabs)
 
     return (
-        '<!doctype html><html lang="ko"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        f'<title>메일 업무 대시보드</title><style>{CSS}</style></head><body>'
-        f'<main class="wrap"><div class="card">{_hero(m)}{banner}{_kpis(m)}'
+        _head("메일 업무 대시보드") + "<body>"
+        f'<main class="wrap"><div class="card">{banner}{_hero(m)}{_kpis(m)}'
+        '<div class="view-toolbar">'
         f'<nav class="tabs" role="tablist" aria-label="대시보드 보기">{tablist}</nav>'
-        f'{panel_html}</div></main>{_act_templates(m)}'
+        '<label class="pill switch">완료 숨기기<input type="checkbox" id="hide-done" role="switch"></label></div>'
+        f'{panel_html}</div>{_info_section(m)}</main>{_act_templates(m)}'
         '<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>'
         f'<script type="application/json" id="nw-conf">{conf_json}</script>'
-        f'<script>{JS}</script></body></html>'
+        f'<script>{THEME_JS}{PREVIEW_JS}{JS}</script></body></html>'
     )
 
 
@@ -1645,6 +2443,26 @@ h1 em{font-style:normal}
 .tools{display:flex;flex-wrap:wrap;gap:8px}
 .pill{display:inline-flex;align-items:center;gap:8px;padding:8px 14px;border:1px solid var(--line);
  border-radius:999px;background:var(--surface);font:inherit;font-size:12.5px;color:var(--ink-2);cursor:pointer}
+/* 머리말 오른쪽: 토큰 사용 현황(따로 만든 페이지로 감) · 테마 */
+.hero-acts{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+a.pill{text-decoration:none}
+a.pill:hover{border-color:var(--box);background:var(--side)}
+.pill-n{padding:1px 7px;border-radius:5px;background:var(--tag);color:var(--tag-ink);font-size:11.5px;font-weight:600}
+.pill-d{font-size:11.5px;font-weight:600;font-variant-numeric:tabular-nums}
+.pill-d.up{color:var(--warn)}.pill-d.down{color:var(--acc)}
+.pill-go{width:6px;height:6px;margin:0 1px 0 -2px;border-top:1.5px solid var(--muted);
+ border-right:1.5px solid var(--muted);transform:rotate(45deg)}
+/* 토큰 사용 현황 페이지 */
+.usage-page .hero{align-items:flex-start;padding:30px 40px 24px}
+.usage-page .hero-t{display:block}
+.usage-page h1{margin:8px 0 8px}
+.back{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted);text-decoration:none}
+.back:hover{color:var(--ink-2)}
+.back-a{width:6px;height:6px;border-bottom:1.5px solid currentColor;border-left:1.5px solid currentColor;
+ transform:rotate(45deg)}
+.usage-body{padding:4px 40px 36px}
+.usage-body>.seg{margin:0 0 20px}
+.page-foot{margin:14px 2px 0;font-size:12px;color:var(--muted)}
 .switch input{appearance:none;position:relative;flex:none;width:26px;height:15px;margin:0;border-radius:999px;
  background:var(--switch);cursor:pointer;transition:background .15s}
 .switch input::after{content:"";position:absolute;top:2px;left:2px;width:11px;height:11px;border-radius:50%;
@@ -1655,16 +2473,44 @@ h1 em{font-style:normal}
  padding:10px 14px;color:var(--ink-2);margin:0 0 16px;font-size:13px}
 .card>.banner{margin:0 40px 20px}
 .banner.warn{border-color:var(--warn);color:var(--ink)}
+.recipient-alerts p{margin:6px 0;color:var(--ink-2)}
+.recipient-alerts li{padding:8px 0;border-top:1px solid var(--line);overflow-wrap:anywhere}
+.recipient-alerts li span{display:block;font-size:12px;color:var(--muted)}
 
-.kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:var(--line);border-block:1px solid var(--line)}
-.kpi{background:var(--card);padding:22px 28px 24px;min-width:0}
-.kpi p{margin:0}
-.kpi .l{font-size:12px;color:var(--muted)}
-.kpi .v{display:flex;align-items:baseline;gap:8px;margin-top:10px}
-.kpi .v b{font-size:34px;line-height:1;font-weight:600}
-.kpi .den{font-size:17px;font-weight:500;color:var(--muted)}
-.kpi .u,.kpi .c{font-size:11.5px;color:var(--muted)}
-.kpi .c{margin-top:12px}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.hero{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:24px 40px}
+.hero-t{display:flex;align-items:center;flex-wrap:wrap;gap:8px 16px;min-width:0}
+.hero .sub{overflow-wrap:anywhere}
+.digest-overview{display:grid;grid-template-columns:minmax(0,1.62fr) minmax(0,1fr);gap:48px;padding:0 40px 28px}
+.work-overview{min-width:0}
+.kpis{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:40px;padding:0}
+.kpi{min-width:0}
+.kpi p,.kpi h2{margin:0}
+.kpi .l,.system-summary h2{font-size:12px;font-weight:600;color:var(--muted)}
+.kpi .v{display:flex;align-items:baseline;gap:10px;margin-top:10px}
+.kpi .v b{font-size:48px;line-height:1.2;font-weight:650;letter-spacing:-1.5px}
+.kpi .u{font-size:13px;color:var(--muted)}
+.kpi .c{margin-top:8px;font-size:12px;color:var(--ink);line-height:1.7;word-break:keep-all;overflow-wrap:anywhere}
+.deadline-counts{display:flex;flex-wrap:wrap;gap:4px 16px}
+.deadline-counts>span{white-space:nowrap}
+.deadline-counts>span>span{font-weight:650}
+.project-summary{margin:20px 0 0;padding-top:14px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}
+.project-summary b{color:var(--ink);font-weight:650}
+.system-summary{min-width:0;padding:16px 20px;background:var(--side);border:1px solid var(--line);border-radius:12px}
+.system-summary h2{margin:0 0 10px}
+.system-summary dl{margin:0;display:grid;gap:8px;font-size:12px;line-height:1.65}
+.system-summary dl>div{display:grid;grid-template-columns:56px minmax(0,1fr);gap:12px}
+.system-summary dt{color:var(--muted)}
+.system-summary dd{margin:0;overflow-wrap:anywhere;word-break:keep-all}
+.system-summary b{font-weight:400}
+.view-toolbar{display:flex;align-items:center;gap:16px;padding-right:40px;border-top:1px solid var(--line);box-shadow:inset 0 -1px 0 var(--line)}
+.view-toolbar .tabs{flex:1;min-width:0;box-shadow:none}
+.view-toolbar .switch{flex:none;border:0;padding:0;background:transparent;gap:10px;color:var(--muted);white-space:nowrap}
+.view-toolbar .switch input{width:32px;height:18px}
+.view-toolbar .switch input::after{width:14px;height:14px}
+.view-toolbar .switch input:checked::after{transform:translateX(14px)}
+.card>.banner:first-child{margin:0;padding:8px 40px;border:0;border-bottom:1px solid var(--line);border-radius:0;font-size:12px}
+.card>.banner.warn:first-child{border-bottom-color:var(--warn)}
 
 .tabs{display:flex;gap:4px;padding:0 30px;box-shadow:inset 0 -1px 0 var(--line);overflow:auto hidden}
 .tab{appearance:none;background:none;border:0;border-bottom:2px solid transparent;
@@ -1781,6 +2627,7 @@ h1 em{font-style:normal}
 .sit:not([data-state="open"]) .undo{display:inline-block}
 .why{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:12px;padding-top:12px;border-top:1px dashed var(--line)}
 .why-l{margin-right:4px;font-size:12px;font-weight:600;color:var(--ink-2)}
+.why-note{flex-basis:100%;font-size:12px;color:var(--muted)}
 .why .btn.skip{color:var(--muted)}
 .toast{position:fixed;left:50%;bottom:24px;z-index:10;display:flex;align-items:center;gap:12px;max-width:calc(100% - 32px);
  transform:translateX(-50%);padding:10px 12px 10px 16px;border-radius:12px;background:var(--ink);color:var(--card);
@@ -1789,7 +2636,9 @@ h1 em{font-style:normal}
  font:inherit;font-size:12.5px;font-weight:600;color:inherit;cursor:pointer}
 
 .progs{display:flex;flex-direction:column;gap:1px;background:var(--line);border:1px solid var(--line-2);border-radius:12px;overflow:hidden}
+.progress-tabs{margin-bottom:12px}
 .prow{display:flex;align-items:center;background:var(--surface)}
+.prow[data-pstate="delayed"] .pv{color:var(--crit)}
 .prow:hover{background:var(--side)}
 .pgo{appearance:none;flex:1;min-width:0;display:grid;grid-template-columns:190px minmax(0,1fr) 92px;gap:20px;align-items:center;
  margin:0;padding:18px 8px 18px 22px;border:0;background:none;font:inherit;color:inherit;text-align:left;cursor:pointer}
@@ -1808,9 +2657,10 @@ h1 em{font-style:normal}
  font-size:13px;color:var(--ink);text-align:left;cursor:pointer;white-space:nowrap}
 .kb-menu button:hover,.kb-menu button:focus-visible{background:var(--tag);outline:none}
 .kb-menu [data-wmark="deleted"],.kb-menu [data-pmark="deleted"]{color:var(--crit)}
-[data-pstate="open"] .kb-menu [data-pmark="open"],
-[data-pstate]:not([data-pstate="open"]) .kb-menu [data-pmark="done"],
-[data-pstate]:not([data-pstate="open"]) .kb-menu [data-pmark="deleted"]{display:none}
+[data-pstate][data-manual-state=""] .kb-menu [data-pmark="open"],
+[data-pstate="done"] .kb-menu [data-pmark="done"],
+[data-pstate="deleted"] .kb-menu [data-pmark="done"],
+[data-pstate="deleted"] .kb-menu [data-pmark="deleted"]{display:none}
 .pn{display:block;min-width:0}
 .pname{display:block;font-size:13.5px;font-weight:500;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pc{display:block;margin-top:4px;font-size:11px;color:var(--muted)}
@@ -1910,6 +2760,9 @@ i.crit{color:var(--crit)}i.serious{color:var(--warn)}i.warn{color:var(--caution)
 .rtag.rt1{background:color-mix(in srgb,var(--s1) 16%,transparent);border-color:color-mix(in srgb,var(--s1) 45%,transparent)}
 .rtag.rt2{background:color-mix(in srgb,var(--s7) 16%,transparent);border-color:color-mix(in srgb,var(--s7) 45%,transparent)}
 .rtag.rt3{background:color-mix(in srgb,var(--s2) 16%,transparent);border-color:color-mix(in srgb,var(--s2) 45%,transparent)}
+.sim{display:inline-block;padding:0 6px;border-radius:4px;font-size:11px;
+ line-height:18px;white-space:nowrap;cursor:help;color:var(--warn);
+ background:var(--warn-bg);border:1px solid var(--warn-soft)}
 .who{display:inline-flex;gap:4px;align-items:baseline;color:var(--ink-2)}
 .who .none{color:var(--muted)}
 .org{font-size:11px;padding:0 5px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
@@ -1929,6 +2782,20 @@ i.crit{color:var(--crit)}i.serious{color:var(--warn)}i.warn{color:var(--caution)
 .thr-list.box{background:var(--surface);border:1px solid var(--line-2);border-radius:12px;overflow:hidden}
 .thr-h{display:flex;align-items:center;flex-wrap:wrap}.subj{font-weight:500}
 .snip{margin:4px 0 0;color:var(--ink-2);font-size:13px}
+[data-preview].has-preview{cursor:help;text-decoration:underline dotted var(--box);text-underline-offset:4px}
+[data-preview].has-preview:focus-visible{outline:2px solid var(--acc);outline-offset:3px;border-radius:4px}
+.mail-preview{position:fixed;z-index:1000;box-sizing:border-box;width:480px;max-width:calc(100vw - 24px);
+ padding:14px 16px;background:var(--ink);color:var(--card);border:1px solid var(--ink);
+ border-top:3px solid var(--acc);border-radius:12px;box-shadow:0 10px 32px rgba(0,0,0,.18);font-size:13px;line-height:1.65}
+.mail-preview[hidden]{display:none}
+.mail-preview::after{content:"";position:absolute;left:var(--preview-arrow,24px);top:-7px;width:10px;height:10px;
+ background:var(--ink);border-top:1px solid var(--acc);border-left:1px solid var(--acc);transform:rotate(45deg)}
+.mail-preview[data-placement="above"]::after{top:auto;bottom:-6px;border-color:var(--ink);transform:rotate(225deg)}
+.mail-preview-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:8px;
+ color:color-mix(in srgb,var(--card) 75%,var(--ink));font-size:11px;font-weight:600}
+.mail-preview-head small{font-size:10px;font-weight:400}
+.mail-preview-body{max-height:min(320px,50vh);overflow:auto;overscroll-behavior:contain;white-space:pre-wrap;
+ overflow-wrap:anywhere;user-select:text}
 .pend-only .pend-note{margin:0;padding:10px 16px 8px;color:var(--muted);font-size:12px}
 /* 업무 카드 안의 원본 대화: 안쪽 상자 + 한 단계 낮춘 제목 (따로 된 업무로 보이지 않게) */
 .work .thr-list{margin:0 16px 12px;background:var(--side);border:1px solid var(--line);border-radius:8px}
@@ -2020,19 +2887,109 @@ button.cc:hover{background:color-mix(in srgb,var(--crit) 12%,var(--surface))}
 .sit .tip{max-width:min(260px,calc(100vw - 56px))}   /* 좁은 목록 칸에서 카드 밖으로 잘리지 않게 */
 @media (prefers-reduced-motion:reduce){.sit.flash{animation:none;outline:2px solid var(--acc)}}
 
+/* 맨 아래 2depth: 1depth 줄(메일 분류 규칙 · 토큰 사용 현황)을 누르면 2depth 보기가 펼쳐진다 */
+.info{margin-top:20px;background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);overflow:hidden}
+.info-row+.info-row{border-top:1px solid var(--line)}
+.info-h{appearance:none;display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 14px;width:100%;margin:0;
+ padding:18px 28px 18px 22px;border:0;background:none;font:inherit;color:var(--ink);text-align:left;cursor:pointer}
+.info-h:hover{background:var(--side)}
+.info-h::before{content:"";flex:none;align-self:center;width:7px;height:7px;margin:0 2px 0 1px;border-right:1.5px solid var(--muted);
+ border-bottom:1.5px solid var(--muted);transform:rotate(-45deg);transition:transform .15s}
+.info-h[aria-expanded="true"]::before{transform:rotate(45deg)}
+.info-t{font-size:15px;font-weight:600}
+.info-s{flex:1 1 320px;min-width:0;font-size:12.5px;color:var(--muted)}
+.info-b{padding:4px 28px 28px 42px}
+.info-b>.seg{margin:0 0 20px}
+.info-p{min-width:0}
+.ih{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;margin:24px 0 10px;font-size:13px;font-weight:600;color:var(--ink)}
+.info-p>.ih:first-child{margin-top:0}
+.ih-m{font-size:12px;font-weight:400;color:var(--muted)}
+.ib{display:grid;grid-template-columns:minmax(0,210px) minmax(60px,1fr) 150px;gap:14px;align-items:center;padding:6px 0;font-size:13px}
+.ib-l{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink)}
+.ib-l .itag{margin-left:6px;vertical-align:1px}
+.ib-o{display:inline-grid;place-items:center;min-width:18px;height:18px;margin-right:8px;border-radius:50%;
+ background:var(--tag);color:var(--tag-ink);font-size:11px;font-weight:600;vertical-align:1px}
+.ib-n{min-width:72px;text-align:right;font-size:12.5px;font-weight:500;color:var(--ink-2);white-space:nowrap}
+.info .fill,.usage-body .fill{transition:none}.fill.mute{background:var(--box)}
+details.ib-d>summary.ib{padding:6px 0;border-top:0;list-style:none;font-size:13px;color:var(--ink);cursor:pointer}
+details.ib-d>summary::-webkit-details-marker{display:none}
+details.ib-d>summary:hover .ib-l{text-decoration:underline dotted var(--box);text-underline-offset:3px}
+.ib-list{margin:2px 0 10px 26px;padding:8px 12px;border:1px solid var(--line);border-radius:8px;background:var(--side);font-size:12.5px}
+.ib-list li{display:flex;justify-content:space-between;gap:12px;padding:3px 0;color:var(--muted)}
+.ib-list .ib-s{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink-2)}
+.ib-list .ib-p{flex:none}
+.ib-g+.ib-g{border-top:1px dashed var(--line)}
+.ib-note{margin:-2px 0 8px 26px;font-size:12px;color:var(--muted)}
+.iflow{display:grid;gap:10px;margin:0;padding:0;list-style:none}
+.if{padding:12px 16px 13px;background:var(--surface);border:1px solid var(--line-2);border-radius:10px}
+.if-h{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;font-size:13.5px}
+.if-n{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:50%;background:var(--acc-bg);
+ color:var(--acc);font-size:11px;font-weight:700}
+.if-c{margin-left:auto;font-size:12px;color:var(--ink-2)}
+.if-d{margin:6px 0 0 30px;font-size:12.5px;line-height:1.55;color:var(--ink-2)}
+.if-w{margin:4px 0 0 30px;font-size:11.5px;color:var(--muted)}
+.itag{display:inline-block;padding:0 7px;border-radius:4px;background:var(--tag);color:var(--tag-ink);font-size:11px;
+ font-weight:600;line-height:18px;white-space:nowrap}
+.itag.llm{background:var(--acc-bg);color:var(--acc)}
+.itag.bad{background:color-mix(in srgb,var(--crit) 12%,transparent);color:var(--crit)}
+.ichips{display:flex;flex-wrap:wrap;gap:6px}.ichips.gap{margin-top:8px}
+.ichips .chip{margin-left:0;padding:1px 9px;font-size:12px}
+.il{margin:0;padding:0;list-style:none;border:1px solid var(--line-2);border-radius:10px;background:var(--surface)}
+.il>li{display:grid;grid-template-columns:minmax(0,170px) minmax(0,1fr) auto;gap:4px 16px;align-items:baseline;
+ padding:10px 14px;border-bottom:1px solid var(--line);font-size:13px}
+.il>li:last-child{border-bottom:0}
+.il b{font-weight:600;color:var(--ink)}
+.il .d{color:var(--ink-2);line-height:1.55}
+.il .v{font-size:12px;color:var(--muted);white-space:nowrap}
+.itiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line-2);
+ border-radius:10px;overflow:hidden}
+.itile{padding:14px 18px;background:var(--surface)}
+.itile p{margin:0}
+.it-l{font-size:12px;color:var(--muted)}
+.it-v{margin-top:6px;font-size:24px;line-height:1.1;font-weight:600}
+.it-u{margin-left:5px;font-size:12px;font-weight:500;color:var(--muted)}
+.it-g{margin-top:7px}
+.it-c{margin-top:6px;font-size:11.5px;color:var(--muted)}
+/* 증가량: 늘면 주의색(주황), 줄면 강조색(초록) — 토큰은 적게 쓸수록 좋다 */
+.it-d{display:inline-block;padding:1px 7px;border-radius:5px;font-size:11.5px;font-weight:600;
+ font-variant-numeric:tabular-nums;white-space:nowrap}
+.it-d.up{background:var(--warn-bg);color:var(--warn)}
+.it-d.down{background:var(--acc-bg);color:var(--acc)}
+.it-d.flat,.it-d.new{background:var(--tag);color:var(--tag-ink);font-weight:500}
+.it-w{font-weight:400;opacity:.8}
+.ib-n .it-d{margin-left:6px;padding:0 5px;font-size:11px}
+.inote{margin:12px 0 0;font-size:12.5px;line-height:1.55;color:var(--muted)}
+.ifoot{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;margin:14px 0 0;font-size:12.5px;color:var(--muted)}
+a.btn{display:inline-block;text-decoration:none}
+.info .tbl th.num,.info .tbl td.num,.usage-body .tbl th.num,.usage-body .tbl td.num{text-align:right;white-space:nowrap}
+.info .tbl td,.usage-body .tbl td{vertical-align:middle}
+.info .tbl .subj-c,.usage-body .tbl .subj-c{max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.info .tbl .nw,.usage-body .tbl .nw{white-space:nowrap}
+/* 칸이 많은 표(호출 기록 · 무거운 대화)는 좁은 화면에서 글자를 세로로 쪼개지 말고 옆으로 밀어서 본다 */
+.usage-body .tbl{min-width:660px}
+
 @media (max-width:900px){
- .kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .digest-overview{grid-template-columns:minmax(0,1fr);gap:24px}
+ .kpis{gap:24px}
  .today{grid-template-columns:minmax(0,1fr)}
  .sch-body{grid-template-columns:minmax(0,1fr)}
  .col-main{border-right:0;border-bottom:1px solid var(--line)}
  .hero-side{align-items:flex-start}
+ .itiles{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .usage-body{padding:4px 24px 30px}
 }
 @media (max-width:600px){
  .wrap{padding:16px 16px 48px}
  .hero{padding:24px 20px 18px}
  h1{font-size:23px}
  .card>.banner{margin:0 20px 16px}
- .kpi{padding:16px 18px 18px}.kpi .v b{font-size:28px}
+ .digest-overview{padding:0 20px 24px}
+ .kpi .v b{font-size:40px}
+ .deadline-counts{gap:2px 10px}
+ .view-toolbar{flex-wrap:wrap;gap:0;padding-right:0}
+ .view-toolbar .tabs{flex-basis:100%}
+ .view-toolbar .switch{margin:8px 20px 12px 0;margin-left:auto}
+ .card>.banner:first-child{padding:8px 20px}
  .tabs{padding:0 12px}
  .col-main,.col-side,.pad{padding:24px 18px 30px}
  .act{padding:16px}
@@ -2055,15 +3012,144 @@ button.cc:hover{background:color-mix(in srgb,var(--crit) 12%,var(--surface))}
  .cd-dots i.lv-overdue{background:var(--crit)}.cd-dots i.lv-today{background:var(--warn)}
  .cd-dots i.lv-soon{background:var(--caution)}
  .sch-side{padding:14px 12px 16px}
+ .info-h{padding:16px 16px 16px 14px}
+ .info-b{padding:4px 16px 22px}
+ .usage-body{padding:4px 16px 26px}
+ .usage-page .hero{padding:20px 20px 16px}
+ .ib{grid-template-columns:minmax(0,1fr) auto;gap:4px 10px}
+ .ib .track{grid-column:1/-1;grid-row:2}
+ .il>li{grid-template-columns:minmax(0,1fr) auto}
+ .il .d{grid-column:1/-1;grid-row:2}
+ .itiles{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .it-w{display:none}
+ .if-d,.if-w,.ib-note,.ib-list{margin-left:0}
 }
 """)
+
+# 두 페이지가 같이 쓰는 테마 전환 (고른 테마는 브라우저에 기억해 대시보드 · 사용 현황이 같이 따라간다)
+THEME_JS = """
+(function(){
+  var modes=['system','light','dark'],names={system:'시스템',light:'라이트',dark:'다크'};
+  var btn=document.getElementById('theme'),mode='system';
+  if(!btn)return;
+  try{mode=localStorage.getItem('nwmail.theme')||'system'}catch(e){}
+  if(modes.indexOf(mode)<0)mode='system';
+  function applyTheme(){
+    if(mode==='system')document.documentElement.removeAttribute('data-theme');
+    else document.documentElement.setAttribute('data-theme',mode);
+    btn.textContent='테마: '+names[mode];
+  }
+  btn.addEventListener('click',function(){mode=modes[(modes.indexOf(mode)+1)%3];
+    try{localStorage.setItem('nwmail.theme',mode)}catch(e){}applyTheme();});
+  applyTheme();
+})();
+"""
+
+# 토큰 사용 현황 페이지의 2depth 보기 전환. 고른 보기는 주소(#log)와 브라우저에 남겨,
+# 자동 새로고침으로 파일이 바뀌어도 보던 자리로 돌아온다.
+PREVIEW_JS = r"""
+(function(){
+  var tip=document.createElement('div'),head=document.createElement('div'),label=document.createElement('span'),hint=document.createElement('small'),body=document.createElement('div');
+  tip.id='mail-preview';tip.className='mail-preview';tip.hidden=true;tip.setAttribute('role','tooltip');
+  head.className='mail-preview-head';hint.textContent='Esc 닫기';body.className='mail-preview-body';
+  head.appendChild(label);head.appendChild(hint);tip.appendChild(head);tip.appendChild(body);document.body.appendChild(tip);
+  var current=null,timer=null,blocked=null;
+  function available(el){return el.classList.contains('has-preview');}
+  function measure(el){
+    var clipped=el.clientWidth>0&&(el.scrollWidth>el.clientWidth+1||el.scrollHeight>el.clientHeight+1||el.dataset.preview.trim()!==el.textContent.trim());
+    el.classList.toggle('has-preview',clipped);
+    if(clipped)el.setAttribute('tabindex','0');else el.removeAttribute('tabindex');
+  }
+  var observer=window.ResizeObserver?new ResizeObserver(function(entries){entries.forEach(function(e){measure(e.target);});}):null;
+  document.querySelectorAll('[data-preview],.ws,.wsub,.src,.ib-s,.subj-c').forEach(function(el){
+    if(!el.dataset.preview)el.dataset.preview=el.getAttribute('title')||el.textContent;
+    if(!el.dataset.previewLabel)el.dataset.previewLabel=el.classList.contains('ws')?'메일 요약':'메일 제목';
+    el.removeAttribute('title');measure(el);if(observer)observer.observe(el);
+  });
+  function hide(){
+    clearTimeout(timer);
+    if(current){
+      var ids=(current.getAttribute('aria-describedby')||'').split(/\s+/).filter(function(id){return id&&id!==tip.id;});
+      if(ids.length)current.setAttribute('aria-describedby',ids.join(' '));else current.removeAttribute('aria-describedby');
+    }
+    tip.hidden=true;current=null;
+  }
+  function show(el){
+    clearTimeout(timer);if(!available(el)||blocked===el)return;
+    if(current!==el)hide();current=el;
+    label.textContent=el.dataset.previewLabel+' 전체';body.textContent=el.dataset.preview;
+    var ids=(el.getAttribute('aria-describedby')||'').split(/\s+/).filter(Boolean);
+    if(ids.indexOf(tip.id)<0)ids.push(tip.id);el.setAttribute('aria-describedby',ids.join(' '));
+    tip.hidden=false;body.style.maxHeight='';
+    var r=el.getBoundingClientRect(),below=window.innerHeight-r.bottom-20,above=r.top-20;
+    var up=below<Math.min(tip.offsetHeight,220)&&above>below;
+    body.style.maxHeight=Math.max(48,Math.min(320,window.innerHeight/2,(up?above:below)-60))+'px';
+    var top=up?r.top-tip.offsetHeight-8:r.bottom+8;
+    tip.style.left=Math.max(12,Math.min(r.left,window.innerWidth-tip.offsetWidth-12))+'px';
+    tip.style.top=Math.max(12,Math.min(top,window.innerHeight-tip.offsetHeight-12))+'px';
+    tip.dataset.placement=up?'above':'below';
+    tip.style.setProperty('--preview-arrow',Math.max(18,Math.min(r.left+r.width/2-parseFloat(tip.style.left),tip.offsetWidth-28))+'px');
+  }
+  function leave(){
+    clearTimeout(timer);timer=setTimeout(function(){
+      if(current&&(current.matches(':hover')||tip.matches(':hover')||document.activeElement===current))return;
+      hide();
+    },160);
+  }
+  document.addEventListener('pointerover',function(e){
+    var el=e.target.closest('[data-preview]');if(el&&el!==current)show(el);
+    if(tip.contains(e.target))clearTimeout(timer);
+  });
+  document.addEventListener('pointerout',function(e){
+    var el=e.target.closest('[data-preview]');
+    if(el&&!el.contains(e.relatedTarget)){if(blocked===el)blocked=null;leave();}
+    if(tip.contains(e.target)&&!tip.contains(e.relatedTarget))leave();
+  });
+  document.addEventListener('focusin',function(e){var el=e.target.closest('[data-preview]');if(el){blocked=null;show(el);}});
+  document.addEventListener('focusout',function(e){if(e.target===blocked)blocked=null;leave();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape'){blocked=current;hide();}});
+  document.addEventListener('pointerdown',function(e){
+    var el=e.target.closest('[data-preview]');
+    if(el&&e.pointerType==='touch'){blocked=null;show(el);}
+    else if(!el&&!tip.contains(e.target))hide();
+  });
+  document.addEventListener('scroll',function(e){
+    if(tip.contains(e.target)||!current)return;
+    var r=current.getBoundingClientRect();
+    if(r.bottom>0&&r.top<window.innerHeight&&(current.matches(':hover')||document.activeElement===current))show(current);
+    else hide();
+  },true);
+  window.addEventListener('resize',function(){hide();document.querySelectorAll('[data-preview]').forEach(measure);});
+})();
+"""
+
+USAGE_JS = """
+(function(){
+  var box=document.querySelector('[data-usage]');if(!box)return;
+  var KEY='nwmail.usageView';
+  var btns=Array.prototype.slice.call(box.querySelectorAll('[data-sub]'));
+  function pick(key,push){
+    if(!btns.some(function(b){return b.dataset.sub===key;}))key=btns.length?btns[0].dataset.sub:'';
+    btns.forEach(function(b){b.setAttribute('aria-pressed',b.dataset.sub===key?'true':'false');});
+    box.querySelectorAll('[data-pane]').forEach(function(p){p.hidden=p.dataset.pane!==key;});
+    try{localStorage.setItem(KEY,key)}catch(e){}
+    if(push&&history.replaceState)history.replaceState(null,'','#'+key);
+    return key;
+  }
+  var start=location.hash.slice(1);
+  if(!start){try{start=localStorage.getItem(KEY)||''}catch(e){}}
+  pick(start,false);
+  btns.forEach(function(b){b.addEventListener('click',function(){pick(b.dataset.sub,true);});});
+  window.addEventListener('hashchange',function(){pick(location.hash.slice(1),false);});
+})();
+"""
 
 JS = """
 (function(){
   var conf={};
   try{conf=JSON.parse(document.getElementById('nw-conf').textContent)}catch(e){}
   var SERVER=conf.port?'http://127.0.0.1:'+conf.port+'/':'';
-  var served=!!conf.sameOrigin||(!!conf.port&&/^https?:$/.test(location.protocol)&&location.port===String(conf.port));
+  var served=!!conf.port&&/^https?:$/.test(location.protocol)&&location.port===String(conf.port);
   // 파일로 열었던 대시보드가 서버 주소로 옮겨 올 때, 그 브라우저에 있던 체크 기록을 #import= 로 받는다
   var imported=null;
   if(location.hash.indexOf('#import=')===0){
@@ -2086,8 +3172,13 @@ JS = """
       if(imported.hide&&localStorage.getItem('nwmail.hide')===null)localStorage.setItem('nwmail.hide',imported.hide);
     }catch(e){}
   }
-  // 남은 할 일 수 · 프로젝트별 진행 막대를 표시 상태로 다시 센다.
-  // 서버와 같은 셈: 전체 = 남은 일 + 완료 (제외 · 업무삭제한 일은 전체에서 뺀다), 진행 = 완료 / 전체
+  Object.keys(conf.taskAliases||{}).forEach(function(alias){
+    var id=conf.taskAliases[alias];
+    if(done.has(alias))done.add(id);
+    if(imported&&imported.at&&imported.at[alias]&&!imported.at[id])imported.at[id]=imported.at[alias];
+  });
+  // 완료 수 · 프로젝트별 진행 막대를 표시 상태로 다시 센다 (프로젝트 카드 · 업무 카드 · 오늘 탭 모두 완료 / 전체).
+  // 서버와 같은 셈: 전체 = 남은 일 + 완료 (제외 · 업무삭제한 일은 전체에서 뺀다)
   function tally(el){
     var c={open:0,total:0};
     el.querySelectorAll('.task').forEach(function(li){
@@ -2097,13 +3188,13 @@ JS = """
   function progress(){
     var by={};
     document.querySelectorAll('.proj[data-project]').forEach(function(art){
-      var c=by[art.dataset.project]=tally(art);
-      var b=art.querySelector('[data-open]');if(b)b.textContent=c.open;
+      var c=by[art.dataset.project]=projectTally(art.dataset.project);
+      var b=art.querySelector('[data-done]');if(b)b.textContent=c.total-c.open;
       var t=art.querySelector('[data-ptotal]');if(t)t.textContent=c.total;
     });
-    document.querySelectorAll('.work [data-wopen]').forEach(function(b){
+    document.querySelectorAll('.work [data-wdone]').forEach(function(b){
       var w=b.closest('.work'),c=tally(w),t=w.querySelector('[data-wtotal]');
-      b.textContent=c.open;if(t)t.textContent=c.total;
+      b.textContent=c.total-c.open;if(t)t.textContent=c.total;
     });
     document.querySelectorAll('.prow').forEach(function(r){
       var c=by[r.dataset.goto];if(!c)return;
@@ -2111,6 +3202,7 @@ JS = """
       r.querySelector('.pv').textContent=c.total?n+'/'+c.total:'할 일 없음';
       r.querySelector('.fill').style.width=(c.total?Math.round(n*100/c.total):0)+'%';
     });
+    layoutProjects();
   }
 
   // ── 내 할 일: 완료 · 제외 · 업무삭제 (로컬 서버의 feedback.db 에 기록) ──────
@@ -2219,47 +3311,105 @@ JS = """
   }
   function post(items){return send('/api/feedback',{items:items});}
   function snapshot(li){
-    return {text:li.querySelector('.t').textContent,thread_key:li.dataset.thread,
+    var t=li.querySelector('.t');
+    return {text:li.dataset.text||(t?t.textContent:''),thread_key:li.dataset.thread,
       subject:li.dataset.subject,project:li.dataset.pname,
       deadline:li.dataset.deadline,urgency:li.dataset.urgency,
       kind:li.dataset.kind||'me',role:li.dataset.role||'',assignee:li.dataset.assignee||''};
   }
   // 프로젝트 줄은 자리를 옮기지 않고 그 자리에서 완료 표시만 한다 (묶음 안에서 아래로)
+  // 남은 할 일 목록 · '제외·삭제한 할 일' 접힘을 필요할 때 만든다 (서버가 그리는 차례와 같게)
+  function taskList(work){
+    var ul=work.querySelector(':scope>.tasks');
+    if(!ul){
+      ul=document.createElement('ul');ul.className='tasks';
+      var head=work.querySelector('.work-h');
+      work.insertBefore(ul,head?head.nextSibling:work.firstChild);
+    }
+    return ul;
+  }
+  function goneBox(work){
+    var box=work.querySelector(':scope>.gone');
+    if(!box){
+      box=document.createElement('details');box.className='gone';
+      var sum=document.createElement('summary'),ul=document.createElement('ul');ul.className='tasks';
+      box.appendChild(sum);box.appendChild(ul);
+      var main=work.querySelector(':scope>.tasks');
+      work.insertBefore(box,main?main.nextSibling:null);
+    }
+    return box;
+  }
+  // 접힘 건수 · '남은 할 일 없음' 줄을 지금 목록에 맞춘다
+  function syncWork(work){
+    var main=work.querySelector(':scope>.tasks'),box=work.querySelector(':scope>.gone');
+    var live=main?main.children.length:0,gone=box?box.querySelector('.tasks').children.length:0;
+    if(box){box.hidden=!gone;box.querySelector('summary').textContent='제외·삭제한 할 일 '+gone+'개';}
+    if(main)main.hidden=!live;
+    var note=work.querySelector(':scope>.no-task');
+    if(!note&&!live){
+      note=document.createElement('p');note.className='no-task';note.textContent='남은 할 일 없음';
+      work.insertBefore(note,main||box);
+    }
+    if(note)note.hidden=!!live;
+  }
+  // 프로젝트 탭 줄: 완료는 묶음 맨 아래로, 제외 · 업무삭제는 '제외·삭제한 할 일' 접힘으로 옮긴다.
+  // 되돌리면 남은 할 일 자리(완료한 줄 앞)로 돌아온다 — 서버가 다시 그릴 때와 같은 모양
   function placeTask(li){
-    var ul=li.parentElement;
-    if(ul&&li.dataset.state!=='open'&&li.nextElementSibling===null)return;
-    if(ul&&li.dataset.state!=='open')ul.appendChild(li);
-    li.classList.toggle('done',li.dataset.state==='done');
+    var work=li.closest('.work'),s=li.dataset.state,drop=s==='excluded'||s==='deleted';
+    li.classList.toggle('done',s==='done');
     li.querySelector('.st').textContent=statusText(li);
+    if(!work)return;
+    var ul=drop?goneBox(work).querySelector('.tasks'):taskList(work),moved=li.parentElement!==ul;
+    if(drop||s==='done'){if(moved||li.nextElementSibling)ul.appendChild(li);}
+    else if(moved){
+      var at=null,ks=ul.children;
+      for(var i=0;i<ks.length;i++){if(ks[i].dataset.state!=='open'){at=ks[i];break;}}
+      ul.insertBefore(li,at);
+    }
+    syncWork(work);
   }
   function relocate(li){
     if(li.classList.contains('task'))placeTask(li);else if(li.classList.contains('sit'))placeSit(li);else place(li);
   }
   function apply(li,state){
+    Object.keys(conf.projectTasks||{}).forEach(function(name){
+      var it=conf.projectTasks[name][li.dataset.task];if(it)it.state=state?state.label:'open';
+    });
     li.dataset.state=state?state.label:'open';
     li.dataset.reason=state&&state.reason||'';
     li.dataset.at=state?state.labeled_at:'';
     relocate(li);
     // 같은 할 일이 여러 탭(오늘 · 프로젝트 · 일정)에 있으면 함께 맞춘다
     document.querySelectorAll('[data-task="'+li.dataset.task+'"]').forEach(function(o){
-      if(o===li||o.dataset.state===li.dataset.state)return;
+      if(o===li)return;
       o.dataset.state=li.dataset.state;o.dataset.reason=li.dataset.reason;o.dataset.at=li.dataset.at;
       relocate(o);
     });
     if(li.dataset.kind==='task')ensureCard(li);      // 오늘 탭에 아직 카드가 없으면 완료 · 제외 목록에 올린다
   }
+  var pendingTasks={};
+  function taskBusy(id,busy){
+    pendingTasks[id]=busy;
+    document.querySelectorAll('[data-task="'+id+'"] .ctl button').forEach(function(b){b.disabled=busy;});
+  }
   function mark(li,label,reason){
+    if(pendingTasks[li.dataset.task])return;
     closeWhy();
     var prev=li.dataset.state==='open'?null:
       {label:li.dataset.state,reason:li.dataset.reason,labeled_at:li.dataset.at};
     apply(li,label==='open'?null:{label:label,reason:reason||'',labeled_at:new Date().toISOString()});
+    taskBusy(li.dataset.task,true);
     refresh();
     post([{task_id:li.dataset.task,label:label,reason:reason||'',snapshot:snapshot(li)}]).then(function(j){
       apply(li,j.states&&j.states[li.dataset.task]||null);refresh();
-      toast(label==='open'?'남은 할 일로 되돌렸어요':conf.labels[label]+'로 표시했어요',function(){
+      var excluded=li.dataset.thread&&conf.analysisExclusions[label]===reason;
+      toast(label==='open'?'남은 할 일로 되돌렸어요':excluded?
+        '이 대화는 새 답장이 와도 AI 분석에서 제외해요':conf.labels[label]+'로 표시했어요',function(){
         mark(li,prev?prev.label:'open',prev?prev.reason:'');});
     }).catch(function(err){
       apply(li,prev);refresh();toast('저장하지 못했어요 — '+err.message);
+    }).finally(function(){
+      taskBusy(li.dataset.task,false);
     });
   }
   var whyBox=null;
@@ -2275,6 +3425,11 @@ JS = """
       b.textContent=text;b.addEventListener('click',fn);box.appendChild(b);
     }
     (conf.reasons[label]||[]).forEach(function(r){add(r,'',function(){mark(li,label,r);});});
+    if(conf.analysisExclusions[label]){
+      var note=document.createElement('span');note.className='why-note';
+      note.textContent='“'+conf.analysisExclusions[label]+'”을 선택하면 이 대화는 새 답장이 와도 AI 분석에서 제외합니다. 되돌리면 다시 분석합니다.';
+      box.appendChild(note);
+    }
     add('사유 없이','skip',function(){mark(li,label,'');});
     add('취소','skip',closeWhy);
     li.appendChild(box);whyBox=box;box.querySelector('button').focus();
@@ -2372,27 +3527,53 @@ JS = """
     }).catch(function(err){applyWait(li,prev);toast('저장하지 못했어요 — '+err.message);});
   }
 
-  var pview='open';
+  var pview='open',progressView='open';
+  function projectTally(name){
+    var c={open:0,total:0,overdue:0},items=(conf.projectTasks||{})[name]||{};
+    Object.keys(items).forEach(function(id){
+      var it=items[id];if(it.state==='open'){
+        c.open++;var day=isoOf(it.deadline);if(day&&day<conf.today)c.overdue++;
+      }
+      if(it.state==='open'||it.state==='done')c.total++;
+    });return c;
+  }
+  function projectState(el){
+    var manual=el.dataset.manualState;if(manual)return manual;
+    var c=projectTally(el.dataset.project||el.dataset.goto);
+    return c.overdue?'delayed':!c.open&&el.dataset.ready==='1'?'done':'open';
+  }
   function projEls(name){
     return Array.prototype.filter.call(document.querySelectorAll('.proj[data-project],.prow[data-goto]'),
       function(el){return (el.dataset.project||el.dataset.goto)===name;});
   }
   function layoutProjects(){
-    var counts={open:0,done:0,deleted:0},named=0,rows=0;
+    var counts={open:0,done:0,delayed:0,deleted:0},rowCounts={open:0,done:0,delayed:0},named=0,rows=0;
     document.querySelectorAll('.proj[data-project]').forEach(function(a){
-      var s=a.dataset.pstate;counts[s]=(counts[s]||0)+1;a.hidden=s!==pview;
-      if(s==='open'&&a.dataset.project!==conf.unclassified)named++;});
+      var s=a.dataset.pstate=projectState(a);counts[s]=(counts[s]||0)+1;a.hidden=s!==pview;
+      if((s==='open'||s==='delayed')&&a.dataset.project!==conf.unclassified)named++;});
     document.querySelectorAll('.client').forEach(function(sec){
       var n=sec.querySelectorAll('.proj:not([hidden])').length;sec.hidden=!n;
       var c=sec.querySelector('[data-ccnt]');if(c)c.textContent=n;});
     document.querySelectorAll('.prow[data-goto]').forEach(function(r){
-      r.hidden=r.dataset.pstate!=='open';if(!r.hidden)rows++;});
+      r.dataset.pstate=projectState(r);r.hidden=r.dataset.pstate!==progressView;
+      if(r.dataset.pstate!=='deleted')rowCounts[r.dataset.pstate]++;
+      if(!r.hidden)rows++;});
+    Object.keys(rowCounts).forEach(function(k){put('progress-cnt-'+k,rowCounts[k]);});
     Object.keys(counts).forEach(function(k){put('pcnt-'+k,counts[k]);});
     put('kpi-proj',named);
-    var tc=document.querySelector('[data-tabcnt="tab-projects"]');if(tc)tc.textContent=counts.open;
+    var tc=document.querySelector('[data-tabcnt="tab-projects"]');if(tc)tc.textContent=counts.open+counts.delayed;
     var pe=document.getElementById('pempty');if(pe)pe.hidden=!!counts[pview];
     var ge=document.getElementById('progs-empty');if(ge)ge.hidden=rows>0;
   }
+  function setProgressView(v){
+    if(['open','done','delayed'].indexOf(v)<0)return;
+    progressView=v;
+    document.querySelectorAll('[data-progress-view]').forEach(function(b){b.setAttribute('aria-pressed',String(b.dataset.progressView===v));});
+    put('progs-empty',v==='done'?'완료한 프로젝트가 없습니다.':v==='delayed'?'지연된 프로젝트가 없습니다.':'진행 중인 프로젝트가 없습니다.');
+    closeMenu();layoutProjects();
+  }
+  document.querySelectorAll('[data-progress-view]').forEach(function(b){
+    b.addEventListener('click',function(){setProgressView(b.dataset.progressView);});});
   function setPView(v){
     pview=v;
     document.querySelectorAll('[data-pview]').forEach(function(b){
@@ -2404,18 +3585,18 @@ JS = """
     b.addEventListener('click',function(){setPView(b.dataset.pview);});});
   function applyProject(name,st){
     projEls(name).forEach(function(el){
-      el.dataset.pstate=st?st.label:'open';el.dataset.at=st?st.labeled_at:'';
+      el.dataset.manualState=st?st.label:'';el.dataset.at=st?st.labeled_at:'';
       var t=el.querySelector('.proj-h>.st');if(t)t.textContent=markText('project',st&&st.label,st&&st.labeled_at);
     });
     layoutProjects();
   }
   function markProject(el,label){
     var name=el.dataset.project||el.dataset.goto;
-    var prev=el.dataset.pstate==='open'?null:{label:el.dataset.pstate,labeled_at:el.dataset.at};
+    var prev=el.dataset.manualState?{label:el.dataset.manualState,labeled_at:el.dataset.at}:null;
     applyProject(name,label==='open'?null:{label:label,labeled_at:new Date().toISOString()});
     send('/api/mark',{target:'project',key:name,label:label,ref_at:el.dataset.latest,title:name}).then(function(j){
       applyProject(name,j.state||null);
-      toast(label==='open'?'「'+name+'」 진행 중으로 되돌렸어요':
+      toast(label==='open'?'「'+name+'」 업무 상태에 따라 다시 분류했어요':
         label==='done'?'「'+name+'」 완료 프로젝트로 옮겼어요':'「'+name+'」 삭제했어요 (메일은 그대로예요)',
         function(){markProject(el,prev?prev.label:'open');});
     }).catch(function(err){applyProject(name,prev);toast('저장하지 못했어요 — '+err.message);});
@@ -2601,6 +3782,10 @@ JS = """
   function applyDue(id,st,quiet){
     document.querySelectorAll('[data-task="'+id+'"]').forEach(function(el){
       el.dataset.manual=st?'1':'';el.dataset.deadline=st?st.due:(el.dataset.mdl||'');paintDue(el);});
+    var row=document.querySelector('[data-task="'+id+'"]');
+    if(row)Object.keys(conf.projectTasks||{}).forEach(function(name){
+      var it=conf.projectTasks[name][id];if(it)it.deadline=row.dataset.deadline;
+    });
     if(!quiet){reorderActs();sortSits();refresh();}
   }
   // 남은 내 할 일은 서버와 같은 순서(마감 → 긴급도 → 새 메일)로 다시 늘어놓는다
@@ -2748,7 +3933,7 @@ JS = """
       });
       document.querySelectorAll('.proj[data-project]').forEach(function(a){
         var st=active(pm[a.dataset.project]||null,a.dataset.latest);
-        if((st?st.label:'open')!==a.dataset.pstate||(st&&st.labeled_at!==a.dataset.at))applyProject(a.dataset.project,st);
+        if((st?st.label:'')!==(a.dataset.manualState||'')||(st&&st.labeled_at!==a.dataset.at))applyProject(a.dataset.project,st);
       });
       refresh();
       if(!moved.length)return;
@@ -2819,17 +4004,36 @@ JS = """
   });
   layoutWaits();layoutProjects();
 
-  var modes=['system','light','dark'],names={system:'시스템',light:'라이트',dark:'다크'};
-  var btn=document.getElementById('theme'),mode='system';
-  try{mode=localStorage.getItem('nwmail.theme')||'system'}catch(e){}
-  function applyTheme(){
-    if(mode==='system')document.documentElement.removeAttribute('data-theme');
-    else document.documentElement.setAttribute('data-theme',mode);
-    btn.textContent='테마: '+names[mode];
+  // ── 맨 아래 2depth: 메일 분류 규칙 ────────────────────────────────────────────
+  // 1depth 줄을 누르면 펼치고 접는다. 펼친 줄과 고른 2depth 보기는 브라우저에 기억한다 (처음에는 모두 접힘).
+  // 자동 새로고침의 스크롤 되돌리기보다 먼저 펼쳐 둬야 보던 자리로 돌아간다.
+  var IK='nwmail.info',info={open:{},sub:{}};
+  try{var iv=JSON.parse(localStorage.getItem(IK)||'{}');info.open=iv.open||{};info.sub=iv.sub||{};}catch(e){}
+  function saveInfo(){try{localStorage.setItem(IK,JSON.stringify(info))}catch(e){}}
+  function openInfo(row,on){
+    row.querySelector('.info-h').setAttribute('aria-expanded',on?'true':'false');
+    row.querySelector('.info-b').hidden=!on;
   }
-  btn.addEventListener('click',function(){mode=modes[(modes.indexOf(mode)+1)%3];
-    try{localStorage.setItem('nwmail.theme',mode)}catch(e){}applyTheme();});
-  applyTheme();
+  function pickInfo(row,key){
+    var btns=Array.prototype.slice.call(row.querySelectorAll('[data-sub]'));
+    if(!btns.some(function(b){return b.dataset.sub===key;}))key=btns.length?btns[0].dataset.sub:'';
+    btns.forEach(function(b){b.setAttribute('aria-pressed',b.dataset.sub===key?'true':'false');});
+    row.querySelectorAll('[data-pane]').forEach(function(p){p.hidden=p.dataset.pane!==key;});
+    return key;
+  }
+  document.querySelectorAll('.info-row[data-info]').forEach(function(row){
+    var k=row.dataset.info;
+    openInfo(row,!!info.open[k]);pickInfo(row,info.sub[k]);
+    row.querySelector('.info-h').addEventListener('click',function(){
+      info.open[k]=!info.open[k];openInfo(row,info.open[k]);saveInfo();});
+    row.querySelectorAll('[data-sub]').forEach(function(b){
+      b.addEventListener('click',function(){info.sub[k]=pickInfo(row,b.dataset.sub);saveInfo();});});
+  });
+  // 다른 탭으로 가는 링크(#blocked 등): 탭을 바꾸고 탭 줄로 올라간다
+  window.addEventListener('hashchange',function(){
+    var id='tab-'+location.hash.slice(1);if(!document.getElementById(id))return;
+    show(id);var nav=document.querySelector('.tabs');if(nav)nav.scrollIntoView({block:'start',behavior:'smooth'});
+  });
 
   // 자동 실행이 10분마다 파일을 새로 만들므로, 보고 있지 않을 때 다시 읽는다.
   // 스크롤 위치 · 펼친 항목 · 내 할 일 보기 · 일정 탭에서 보던 달과 날짜는 유지한다 (sessionStorage).
@@ -2843,6 +4047,7 @@ JS = """
       document.querySelectorAll('details').forEach(function(d){if(v.open.indexOf(keyOf(d))>=0)d.open=true;});
       if(v.acts)setView(v.acts);
       if(v.pview)setPView(v.pview);
+      if(v.progressView)setProgressView(v.progressView);
       if(v.sch&&isoOf(v.sch.day)&&isoOf(v.sch.month+'-01')){
         cal.day=v.sch.day;cal.month=v.sch.month;cal.panel=v.sch.panel||'day';drawSchedule();}
       window.scrollTo(0,v.y);}}catch(e){}
@@ -2851,7 +4056,7 @@ JS = """
   setInterval(function(){
     if(whyBox||openMenu||(!document.hidden&&Date.now()-idle<120000))return;   // 조작 중이면 미룬다
     if(pinned)return;                    // 기한을 고치는 중이면 미룬다
-    try{sessionStorage.setItem(SK,JSON.stringify({y:window.scrollY,acts:view,pview:pview,
+    try{sessionStorage.setItem(SK,JSON.stringify({y:window.scrollY,acts:view,pview:pview,progressView:progressView,
       sch:{month:cal.month,day:cal.day,panel:cal.panel},
       open:Array.prototype.map.call(document.querySelectorAll('details[open]'),keyOf)}));}catch(e){}
     location.reload();

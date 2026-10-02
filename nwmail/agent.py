@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import time
 from contextlib import ExitStack
 from pathlib import Path
 
@@ -64,10 +65,31 @@ class MailSummaryAgent:
         if not mails:
             return {"overview": "요약할 메일이 없습니다.", "items": [], "count": 0,
                     "source": self.cfg.mail_source}
-        result = self.llm.summarize(mails)
+        started = time.monotonic()
+        try:
+            result = self.llm.summarize(mails)
+        except Exception as e:
+            used = getattr(e, "result", None)
+            self._record(len(mails), started, used.usage() if used else None,
+                         error=f"{type(e).__name__}: {e}")
+            raise
+        self._record(len(mails), started, result.get("_usage"))
         result["count"] = len(mails)
         result["source"] = self.cfg.mail_source
         return result
+
+    def _record(self, n_mails: int, started: float, used: dict | None, error: str = "") -> None:
+        """토큰을 쓰는 요약(claude_code · api)이면 대시보드 '토큰 사용 현황'에 남긴다. 기록 실패는 무시한다."""
+        if self.cfg.summary_backend not in ("claude_code", "api"):
+            return
+        from . import usage
+        from .store import Store
+        try:
+            with Store() as store:
+                usage.record_call(store, "summary", usage=used, backend=self.cfg.summary_backend,
+                                  seconds=time.monotonic() - started, mails=n_mails, error=error)
+        except Exception:
+            pass
 
 
 def render(result: dict) -> str:
@@ -104,9 +126,10 @@ def render(result: dict) -> str:
         lines.append("")
 
     if usage := result.get("_usage"):
-        lines.append(
-            f"(토큰: 입력 {usage['input_tokens']:,} / 출력 {usage['output_tokens']:,})"
-        )
+        # 입력은 캐시로 읽고 쓴 부분까지 (claude_code 는 기본 지시문 대부분이 캐시로 잡힌다)
+        read = sum(int(usage.get(k) or 0)
+                   for k in ("input_tokens", "cache_read_tokens", "cache_write_tokens"))
+        lines.append(f"(토큰: 입력 {read:,} / 출력 {int(usage.get('output_tokens') or 0):,})")
     return "\n".join(lines)
 
 

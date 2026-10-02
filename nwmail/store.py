@@ -1,7 +1,7 @@
 """로컬 메일 저장소 (SQLite).
 
 매번 IMAP 을 다시 훑지 않기 위한 캐시이자, 대시보드가 유지해야 하는 상태
-(차단 이력, 신규 항목 판별)의 보관소.
+(차단 이력, 신규 항목 판별)와 Claude 사용량 기록(llm_calls · llm_runs, usage.py)의 보관소.
 
 보관 범위
   - 받은메일함의 최근 N일(기본 7일) 메일
@@ -95,7 +95,11 @@ CREATE TABLE IF NOT EXISTS extractions (
     payload      TEXT,
     source_hash  TEXT,
     backend      TEXT,
-    extracted_at TEXT
+    extracted_at TEXT,
+    covered      TEXT DEFAULT '[]',      -- 정리에 반영한 메일 uid (다음엔 그 뒤에 온 메일만 보낸다)
+    full_at      TEXT DEFAULT '',        -- 마지막 '전체 정리' 시각 (증분은 여기서부터 쌓인다)
+    updates      INTEGER DEFAULT 0,      -- 전체 정리 뒤 증분으로 갱신한 횟수
+    version      TEXT DEFAULT ''         -- 그때의 프롬프트 판 (바뀌면 전체로 다시)
 );
 
 CREATE TABLE IF NOT EXISTS task_state (
@@ -114,6 +118,45 @@ CREATE TABLE IF NOT EXISTS runs (
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT
+);
+
+-- Claude 호출 기록 (대시보드 '토큰 사용 현황', usage.py). 메일을 다시 받아도 지우지 않는다
+CREATE TABLE IF NOT EXISTS llm_calls (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    at                 TEXT NOT NULL,           -- 호출 시작 (UTC ISO)
+    purpose            TEXT NOT NULL,           -- extract | summary | verify
+    trigger            TEXT DEFAULT 'manual',   -- auto (작업 스케줄러) | manual
+    run_id             INTEGER,                 -- llm_runs.id (업무 정리 한 번)
+    backend            TEXT DEFAULT '',
+    model              TEXT DEFAULT '',
+    threads            INTEGER DEFAULT 0,
+    mails              INTEGER DEFAULT 0,
+    prompt_chars       INTEGER DEFAULT 0,
+    input_tokens       INTEGER DEFAULT 0,
+    output_tokens      INTEGER DEFAULT 0,
+    cache_read_tokens  INTEGER DEFAULT 0,
+    cache_write_tokens INTEGER DEFAULT 0,
+    cost_usd           REAL DEFAULT 0,          -- API 환산 (구독이라 실제 청구 없음)
+    seconds            REAL DEFAULT 0,
+    ok                 INTEGER DEFAULT 1,
+    error_kind         TEXT DEFAULT '',         -- limit | timeout | auth | error
+    error              TEXT DEFAULT '',
+    detail             TEXT DEFAULT '[]',       -- 보낸 대화별 [thread_key, 제목, 프로젝트, 글자 수, 메일 수, 방식]
+    mode               TEXT DEFAULT ''          -- full(대화 전체) | delta(정리 결과 + 새 메일) | mixed
+);
+CREATE INDEX IF NOT EXISTS ix_llm_calls_at ON llm_calls(at);
+
+CREATE TABLE IF NOT EXISTS llm_runs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    at         TEXT NOT NULL,
+    purpose    TEXT DEFAULT 'extract',
+    trigger    TEXT DEFAULT 'manual',
+    threads    INTEGER DEFAULT 0,               -- 다룬 대화 (정기 메일 제외)
+    skipped    INTEGER DEFAULT 0,               -- 정기 메일이라 추출하지 않은 대화 (extract_skip)
+    cached     INTEGER DEFAULT 0,               -- 내용이 그대로라 다시 묻지 않은 대화
+    extracted  INTEGER DEFAULT 0,
+    failed     INTEGER DEFAULT 0,
+    calls      INTEGER DEFAULT 0
 );
 """
 
@@ -220,6 +263,13 @@ class Store:
             self.conn.execute("ALTER TABLE runs ADD COLUMN kind TEXT DEFAULT 'sync'")
         if "category" not in {r["name"] for r in self.conn.execute("PRAGMA table_info(filters)")}:
             self.conn.execute("ALTER TABLE filters ADD COLUMN category TEXT DEFAULT '기타'")
+        have = {r["name"] for r in self.conn.execute("PRAGMA table_info(extractions)")}
+        for col, ddl in (("covered", "TEXT DEFAULT '[]'"), ("full_at", "TEXT DEFAULT ''"),
+                         ("updates", "INTEGER DEFAULT 0"), ("version", "TEXT DEFAULT ''")):
+            if col not in have:      # 예전 정리 결과는 covered 가 비어 있어 다음 번에 전체로 한 번 다시 정리된다
+                self.conn.execute(f"ALTER TABLE extractions ADD COLUMN {col} {ddl}")
+        if "mode" not in {r["name"] for r in self.conn.execute("PRAGMA table_info(llm_calls)")}:
+            self.conn.execute("ALTER TABLE llm_calls ADD COLUMN mode TEXT DEFAULT ''")
         if not self.conn.execute("SELECT 1 FROM mails LIMIT 1").fetchone():
             self._set_meta("schema_version", SCHEMA_VERSION)     # 빈 DB 는 바로 최신
 
@@ -504,6 +554,17 @@ class Store:
             })
         out.sort(key=lambda t: t["last_at"] or "", reverse=True)
         return out
+
+    def last_received(self) -> dict[str, str]:
+        """대화별 마지막으로 받은 메일 시각 (내가 보낸 메일은 뺀다).
+
+        완료 표시를 한 뒤 그 대화에 새 메일이 왔는지 가르는 기준이다. 새 메일이 없다면
+        정리 결과의 문구가 달라진 것은 다시 뽑으면서 바뀐 것뿐이므로 표시를 그대로 이어받고,
+        새 메일이 있다면 다시 요청된 일일 수 있어 사람이 판단하도록 남긴다 (dashboard.adopt_marks).
+        """
+        return {r["thread_key"]: r["last_at"] for r in self.conn.execute(
+            "SELECT thread_key, MAX(sent_at) AS last_at FROM mails"
+            " WHERE is_mine = 0 AND sent_at IS NOT NULL GROUP BY thread_key")}
 
     def blocked_mails(self, window_days: int | None = 7,
                       now: datetime | None = None) -> list[dict]:

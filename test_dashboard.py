@@ -12,7 +12,9 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from nwmail.client import Mail
-from nwmail.dashboard import build_model, deadline_info, render_html, task_id
+from nwmail.dashboard import (
+    USAGE_PAGE, build_model, deadline_info, render_html, render_usage_html, task_id,
+)
 from nwmail.feedback import FeedbackStore
 from nwmail.filters import add_filter, reapply
 from nwmail.store import Store
@@ -90,7 +92,7 @@ def main() -> int:
                 mail(12, "신규 매장 오픈 고객 초청 모수 확인", "y@aurora.example", "<g2@t>",
                      when="2026-09-07T10:00:00+09:00"),
                 # 세부 프로젝트 키워드 → 업무명에서 프로젝트 이름을 뗌
-                mail(13, "[누리마케팅] AX9  프라이빗 테니스 클럽 레슨_알림톡 문구 변경 요청의 건",
+                mail(13, "[누리마케팅] AX9  멤버십 테니스 클럽 레슨_알림톡 문구 변경 요청의 건",
                      "jh@nurimktg.co.example", "<gv@t>", when="2026-09-08T13:00:00+09:00"),
                 mail(14, "RE: 오로라 한결카드 (오로라 PLCC 3.0) 카카오톡 안내 알림톡 발송 요청 건 (9/8)",
                      "su@aurora.example", "<pl@t>", when="2026-09-08T14:00:00+09:00"),
@@ -265,13 +267,13 @@ def main() -> int:
                           ('<section class="client"',))
         g_names = re.findall(r'data-project="([^"]+)"', aurora)
         check("세부 프로젝트가 고객사 아래로 (AX9 · PLCC · 갤러리 · 스토어)",
-              {"AX9 프라이빗 테니스클럽", "오로라 한결카드 PLCC", "오로라 갤러리",
+              {"AX9 멤버십 테니스클럽", "오로라 한결카드 PLCC", "오로라 갤러리",
                "오로라 스토어", "오로라 운영(기타)"} == set(g_names), str(g_names))
         check("기본 프로젝트(기타)는 고객사 안에서 맨 뒤", g_names[-1] == "오로라 운영(기타)")
         check("'기타' 묶음 머리말", '<h2>기타</h2>' in out and '<h2>오로라</h2>' in aurora)
         misc_ops = section(out, 'data-project="오로라 운영(기타)"', ('<details class="proj"', '<section class="client"'))
         check("키워드 · 태그 없는 오로라 도메인 메일은 오로라 운영(기타)", "신규 매장 오픈" in misc_ops)
-        gv = section(out, 'data-project="AX9 프라이빗 테니스클럽"', ('<details class="proj"', '<section class="client"'))
+        gv = section(out, 'data-project="AX9 멤버십 테니스클럽"', ('<details class="proj"', '<section class="client"'))
         plcc = section(out, 'data-project="오로라 한결카드 PLCC"', ('<details class="proj"', '<section class="client"'))
         check("업무명에서 프로젝트 이름을 뗌 (AX9 … 레슨_알림톡 문구 변경 요청)",
               'data-work="알림톡 문구 변경 요청"' in gv, gv[:300])
@@ -281,11 +283,11 @@ def main() -> int:
               '<details class="proj"' in out and not re.search(r'<details class="proj"[^>]* open', out))
         check("머리말에 최근 메일 날짜", '최근 <span class="num">09/08</span>' in gv)
         check("머리말에 ⋮ 메뉴 (프로젝트 완료 · 삭제 · 되돌리기)",
-              'class="kb-btn"' in gv and 'data-pmark="done">프로젝트 완료' in gv
-              and 'data-pmark="deleted">삭제' in gv and 'data-pmark="open">진행 중으로 되돌리기' in gv)
-        check("진행 중 · 완료 · 삭제 보기 (처음엔 진행 중)",
+              'class="kb-btn"' in gv and 'data-pmark="done">직접 완료 처리' in gv
+              and 'data-pmark="deleted">삭제' in gv and 'data-pmark="open">자동 분류로 되돌리기' in gv)
+        check("진행 중 · 완료 · 지연 · 삭제 보기 (추출 완료된 빈 프로젝트는 완료)",
               'data-pview="open"' in out and 'aria-pressed="true">진행 중' in out
-              and 'id="pcnt-done">0' in out and 'id="pcnt-deleted">0' in out)
+              and 'id="pcnt-done">1' in out and 'id="pcnt-delayed">1' in out and 'id="pcnt-deleted">0' in out)
 
         lumi = section(out, 'data-project="오로라 스토어"', ('<details class="proj"', '<section class="client"'))
         items = [(re.search(r'data-role="([^"]*)"', a).group(1), a + body)
@@ -367,9 +369,9 @@ def main() -> int:
         a1_work = section(lumi, 'data-work="&lt;script&gt;alert(1)&lt;/script&gt; 기획 검토"',
                           ('<section class="work"',))
         a1_head = section(a1_work, '<div class="work-h">', ('</div>',))
-        check("업무 묶음은 카드 한 장: 머리 띠에 진행 상태 · 남은 할 일 · 메일 수",
+        check("업무 묶음은 카드 한 장: 머리 띠에 진행 상태 · 완료한 할 일 · 메일 수",
               '<span class="stt s-ing">진행중</span>' in a1_head
-              and '남은 할 일 <b class="num" data-wopen>5</b>/<span data-wtotal>5</span> · 메일 1통' in a1_head,
+              and '완료 <b class="num" data-wdone>0</b>/<span data-wtotal>5</span> · 메일 1통' in a1_head,
               a1_head)
         check("정리 전 업무는 머리 띠에 '정리 대기', 원본 대화는 카드 안쪽 상자",
               '<span class="wchip">정리 대기</span>' in gen
@@ -377,8 +379,8 @@ def main() -> int:
                   '<ul class="thr-list">' in gen)
         check("할 일 카드 '다른 담당자' 줄은 업무 카드의 details.rel 과 클래스가 겹치지 않음",
               'class="oth"' in out and '<p class="rel' not in out and '.rel{' not in out)
-        check("완료 · 되돌리기 때 업무 카드 남은 할 일 수도 고침",
-              "querySelectorAll('.work [data-wopen]')" in out)
+        check("완료 · 되돌리기 때 업무 카드 완료 수도 고침",
+              "querySelectorAll('.work [data-wdone]')" in out)
 
         hdr("[4] 오늘 — 내 할 일")
         today_tab = section(out, 'id="tab-today"', ('id="tab-projects"',))
@@ -503,14 +505,14 @@ def main() -> int:
         check("업무삭제한 할 일은 목록에서 빠지고 접힌 곳에 남음",
               "일정표 정리" not in tasks_fb and "일정표 정리" in gone_fb
               and "제외·삭제한 할 일 1개" in lumi_fb)
-        check("프로젝트 카드 머리말 = 남은 할 일 / 전체",
-              '남은 할 일 <b class="num" data-open="오로라 스토어">3</b>/<span data-ptotal>4</span>' in lumi_fb,
+        check("프로젝트 카드 머리말 = 완료 / 전체 (오늘 탭 진행 막대와 같은 뜻)",
+              '완료 <b class="num" data-done="오로라 스토어">2</b>/<span data-ptotal>6</span>' in lumi_fb,
               lumi_fb[:400])
-        check("업무 카드 머리 띠도 남은 할 일 / 전체 (제외 · 삭제는 빼고 셈)",
-              'data-wopen>3</b>/<span data-wtotal>4</span>' in lumi_fb)
+        check("업무 카드 머리 띠도 완료 / 전체 (제외 · 삭제는 빼고 셈)",
+              'data-wdone>1</b>/<span data-wtotal>4</span>' in lumi_fb)
         progs_fb = section(out_fb, '<div class="progs">', ('<div class="col-side">',))
         check("진행 막대는 표시 기록으로 채움 (페이지 열기 전부터)",
-              'data-total="4">1/4' in progs_fb and 'style="width:25%"' in progs_fb)
+              'data-total="6">2/6' in progs_fb and 'style="width:33%"' in progs_fb)
         done_l_fb = section(section(out_fb, 'id="tab-today"', ('id="tab-projects"',)),
                             'data-list="done"', ('</ul>',))
         check("오늘 탭 완료 목록에 프로젝트 할 일도 (역할 태그로 구분)",
@@ -536,6 +538,10 @@ def main() -> int:
               and "parked[li.dataset.task]=li;li.remove();" in out_fb)
         check("오늘 완료는 할 일마다 한 번만 셈 (프로젝트 할 일은 오늘 · 프로젝트 탭 두 곳에 있음)",
               "doneIds[li.dataset.task]=1" in out_fb)
+        check("제외 · 업무삭제한 줄은 누른 즉시 '제외·삭제한 할 일' 접힘으로 옮기는 JS (되돌리면 돌아옴)",
+              "function goneBox(work)" in out_fb and "function syncWork(work)" in out_fb
+              and "'제외·삭제한 할 일 '+gone+'개'" in out_fb
+              and "var ul=drop?goneBox(work).querySelector('.tasks'):taskList(work)" in out_fb)
         check("제외 · 업무삭제는 진행 막대 · 남은 할 일의 전체에서 뺌 (페이지가 다시 셀 때도 서버와 같게)",
               "if(s==='open'||s==='done')c.total++" in out_fb and "[data-ptotal]" in out_fb
               and "[data-wtotal]" in out_fb)
@@ -557,14 +563,14 @@ def main() -> int:
         check("진행 프로젝트는 미분류 제외",
               s["named_projects"] == len([p for p in model["projects"] if p["name"] != "미분류"])
               and 'id="kpi-proj">' in out)
-        check("프로젝트 탭 숫자 = 진행 중 프로젝트",
-              f'data-tabcnt="tab-projects">{s["projects_open"]}<' in out
-              and s["projects_open"] == len(model["projects"]))
+        check("프로젝트 탭 숫자 = 진행 중 + 지연 프로젝트",
+              f'data-tabcnt="tab-projects">{s["projects_open"] + s["projects_delayed"]}<' in out
+              and s["projects_open"] + s["projects_delayed"] + s["projects_done"] == len(model["projects"]))
         check("다시 요약 버튼 없음", "다시 요약" not in out)
         check("마지막 정리 = 추출 결과 저장 시각 (실행 기록이 없어도)",
-              '마지막 정리 <b class="num">09/11 09:00</b>' in out)
+              '마지막 <b class="num">09/11 09:00</b>' in out)
         check("다음 자동 정리 시각 (12:00 기준 → 13:00)",
-              '다음 자동 정리 <b class="num">13:00</b>' in out)
+              '다음 <b class="num">13:00</b>' in out)
         from nwmail.dashboard import next_full_run
         late = next_full_run(datetime(2026, 9, 11, 9, 30, tzinfo=timezone.utc))   # 18:30 KST
         check("17시 이후면 다음 날 09:00", (late.day, late.hour) == (12, 9), str(late))
@@ -572,7 +578,7 @@ def main() -> int:
         hdr("[4-2] 오늘 — 프로젝트 진행 · 결정사항")
         progs = section(today_tab, '<div class="progs">', ('<div class="col-side">',))
         check("프로젝트별 진행 줄 (전체 할 일 수)",
-              'data-goto="오로라 스토어"' in progs and 'data-total="5">0/5' in progs)
+              'data-goto="오로라 스토어"' in progs and 'data-total="8">0/8' in progs)
         check("진행 줄마다 ⋮ 메뉴 (줄 이동 버튼과 따로)",
               '<button type="button" class="pgo"' in progs
               and progs.count('class="kb-btn"') == progs.count('class="prow"'))
@@ -656,6 +662,10 @@ def main() -> int:
               "nwmail.done.v1" in out and "input[data-task]" not in out)
         check("서버 주소가 아니면 프로젝트 할 일 버튼도 잠금",
               ".act [data-act],.task [data-act]" in out)
+        rows = re.findall(r'<li class="task[^>]*data-text="([^"]*)"[^>]*>(.*?)</li>', out, re.S)
+        check("프로젝트 할 일 스냅샷 문구에 역할 태그가 섞이지 않음",
+              bool(rows) and all(f"</b>{t}</p>" in li for t, li in rows), f"{len(rows)}건")
+        check("표시를 보낼 때 data-text 를 먼저 쓴다", "li.dataset.text||" in out)
 
         hdr("[6-1] ⋮ 메뉴 표시 — 답변완료 · 프로젝트 완료 · 삭제")
         s_mk = model_mk["stats"]
@@ -685,7 +695,7 @@ def main() -> int:
         check("보기 숫자 (진행 중 · 완료 · 삭제)",
               s_mk["projects_done"] == 1 and s_mk["projects_deleted"] == 1
               and 'id="pcnt-done">1<' in out_mk and 'id="pcnt-deleted">1<' in out_mk
-              and f'data-tabcnt="tab-projects">{s_mk["projects_open"]}<' in out_mk)
+              and f'data-tabcnt="tab-projects">{s_mk["projects_open"] + s_mk["projects_delayed"]}<' in out_mk)
         check("진행 프로젝트 숫자에서 완료 · 삭제는 뺌",
               s_mk["named_projects"] == s["named_projects"] - 1)
         progs_mk = section(t_mk, '<div class="progs">', ('<div class="col-side">',))
@@ -834,6 +844,171 @@ def main() -> int:
               "정산표 검수" not in sched_deleted and "API 연동 개발" not in sched_deleted
               and "기획안 회신" in sched_deleted)
 
+        hdr("[11] 맨 아래 2depth — 메일 분류 규칙")
+        from nwmail import usage as usage_mod
+        from nwmail.projects import load_rules
+        info = section(out, '<section class="info"', ("</main>",))
+        check("탭 영역(카드) 아래에 붙어 어느 탭을 보든 보임",
+              '</div><section class="info"' in out and out.find('<section class="info"') > out.find('id="tab-blocked"'))
+        check("1depth 한 줄 (메일 분류 규칙), 처음엔 접힘",
+              re.findall(r'data-info="(\w+)"', info) == ["rules"]
+              and info.count('aria-expanded="false"') == 1
+              and len(re.findall(r'class="info-b"[^>]*hidden>', info)) == 1)
+        check("2depth 보기: 규칙 5, 첫 보기만 펼침",
+              re.findall(r'data-sub="(\w+)"', info) == ["flow", "block", "proj", "task", "reply"]
+              and re.findall(r'data-pane="(\w+)">', info) == ["flow"])
+        check("토큰 사용 현황은 맨 아래가 아니라 따로 만든 페이지로 감",
+              "토큰 사용 현황" not in info and 'data-pane="sum"' not in out)
+        unknown = sum(th["basis"] == "unknown" for p in model["projects"] for th in p["threads"])
+        check("접혀 있어도 보이는 요약 한 줄 (보호 도메인 · 규칙 · 세부 프로젝트 · 미분류)",
+              f"보호 도메인 3 · 차단 규칙 1 · 세부 프로젝트 {len(load_rules().client_of)} · 최근 7일 미분류 "
+              f"{unknown}건" in info and unknown == 1, str(unknown))
+        groups = {k: section(info, f'<details class="ib-d ib-{k}">', ("</details>",))
+                  for k in ("keyword", "model", "tag", "domain", "unknown")}
+        counts = {k: int(re.search(r'class="ib-n num">(\d+)건', g).group(1)) for k, g in groups.items() if g}
+        check("판정 근거별 대화 수의 합 = 최근 7일 대화 수", sum(counts.values()) == s["threads"], str(counts))
+        check("근거마다 대화 제목 (키워드 · 태그 · 도메인 · 미분류)",
+              "갤러리 티켓" in groups["keyword"] and "[누리마케팅] 신청페이지 수정" in groups["tag"]
+              and "[NURI] 시그니처 연장" in groups["keyword"]           # '시그니처' 는 기타의 키워드
+              and "신규 매장 오픈 고객 초청" in groups["domain"] and "주간 회의록" in groups["unknown"])
+        check("세부 프로젝트 표: 키워드 · 회사 태그 · 도메인 (projects.json 그대로)",
+              "키워드 AX9 멤버십 테니스" in info and "[NURI]" in info and "aurora.example" in info
+              and "추출 제외: 일일 통계 데이터" in info)
+        task_pane = section(info, 'data-pane="task"', ('data-pane="reply"',))
+        pos = [task_pane.find(f"</span>{r}</span>") for r in ("수정", "개발", "디자인", "기타")]
+        check("역할은 판정 순서대로 (수정 → 개발 → 디자인 → 기타)", -1 not in pos and pos == sorted(pos), str(pos))
+        check("한눈에 보기 6단계 · 차단됨 탭으로 가는 링크",
+              info.count('<li class="if">') == 6 and 'href="#blocked"' in info)
+        check("펼친 줄 · 고른 보기는 브라우저에 기억 + 탭 링크",
+              "var IK='nwmail.info'" in out and "addEventListener('hashchange'" in out)
+
+        hdr("[11b] 토큰 사용 현황 — 따로 만든 페이지 (usage.html)")
+        page0 = render_usage_html(model)
+        check("대시보드 머리말에 테마 옆 버튼, 새 페이지로 감",
+              '<div class="hero-acts">' in out and f'href="{USAGE_PAGE}"' in out
+              and out.find('class="pill usage-link"') < out.find('id="theme"'))
+        check("토큰 기록이 없으면 빈 상태 안내",
+              "아직 기록 없음" in page0 and "아직 기록이 없습니다" in page0)
+        check("파비콘은 두 페이지 모두에 (파일로 열어도 보이게 data URI)",
+              out.count('<link rel="icon" href="data:image/svg+xml,') == 1
+              and page0.count('<link rel="icon" href="data:image/svg+xml,') == 1)
+        check("대시보드로 돌아가는 링크 · 테마 버튼은 같이 씀",
+              '<a class="back" href="./">' in page0 and 'id="theme"' in page0
+              and "nwmail.theme" in page0 and "nwmail.theme" in out)
+        check("2depth 보기 3개, 첫 보기만 펼침 · 고른 보기는 주소와 브라우저에 남김",
+              re.findall(r'data-sub="(\w+)"', page0) == ["sum", "where", "log"]
+              and re.findall(r'data-pane="(\w+)">', page0) == ["sum"]
+              and "nwmail.usageView" in page0)
+
+        with Store(Path(tmp) / "d.db") as st:
+            usage_mod.record_call(
+                st, "extract", usage={"model": "claude-opus-5", "input_tokens": 1000, "output_tokens": 500,
+                                      "cache_read_tokens": 19000, "cache_write_tokens": 2000, "cost_usd": 0.25},
+                seconds=80, threads=2, mails=2, at="2026-09-11T00:01:00+00:00",
+                detail=[["<a1@t>", "[루미] <script>alert(1)</script> 기획 검토", "오로라 스토어", 3000, 1],
+                        ["<gv@t>", "AX9 알림톡", "AX9 멤버십 테니스클럽", 1000, 1]])
+            usage_mod.record_call(
+                st, "extract", seconds=3, threads=1, mails=1, at="2026-09-10T04:00:00+00:00",
+                error="ClaudeCliError: claude CLI 실패 (exit 1): You've hit your session limit · resets 1:30pm")
+            st.conn.execute("UPDATE llm_calls SET trigger = 'auto'")
+            st.conn.commit()
+            usage_mod.record_call(st, "verify", usage={"model": "claude-haiku-4-5", "input_tokens": 537,
+                                                       "output_tokens": 73, "cache_write_tokens": 18650},
+                                  at="2026-09-11T02:00:00+00:00")
+            model_u = build_model(st, me=ME, today=TODAY, now=NOW)
+        info_u = render_usage_html(model_u)
+        check("요약 줄: 오늘 호출 · 토큰 · 최근 7일 · 한도 초과",
+              "오늘 호출 2회 · 41.8K 토큰 — 최근 7일 41.8K 토큰" in info_u and "한도 초과 1회" in info_u)
+        sum_pane = section(info_u, 'data-pane="sum"', ('data-pane="where"',))
+        check("사용량 칸 넷: 오늘 · 최근 7일 · 이번 달 · 누적", sum_pane.count('class="itile"') == 4
+              and '<p class="it-l">이번 달 (9월)</p>' in sum_pane and '<p class="it-l">누적</p>' in sum_pane)
+        check("칸마다 증가량 한 줄 (견준 기간 이름과 같이)",
+              sum_pane.count('<p class="it-g">') == 4 and "어제 기록 없음" in sum_pane
+              and "지난 7일 기록 없음" in sum_pane and "지난달 기록 없음" in sum_pane
+              and "하루 평균 20.9K · 2일째" in sum_pane)
+        check("일별 7줄, 한도 초과한 날 표시",
+              len(re.findall(r'<span class="ib-l">\d\d/\d\d ', sum_pane)) == 7
+              and '09/10 목 <span class="itag bad">한도 초과</span>' in sum_pane)
+        check("일별 막대에도 하루 전보다 늘고 준 양", '<span class="it-d up">▲ 41.8K</span>' in sum_pane)
+        check("회차별: 자동 09시 · 13시 · 17시", all(f'<span class="ib-l">{h}시</span>' in sum_pane
+                                               for h in ("09", "13", "17")))
+        where = section(info_u, 'data-pane="where"', ('data-pane="log"',))
+        check("호출마다 붙는 기본 지시문 = 확인 호출 입력", "약 19.2K 토큰" in where)
+        check("무거운 대화: 글자 수 비율로 나눈 추정 토큰 (3:1)", "16.9K" in where and "5.6K" in where)
+        check("대화 제목은 이스케이프", "<script>alert(1)" not in info_u and "&lt;script&gt;alert(1)" in info_u)
+        log_pane = section(info_u, 'data-pane="log"', ("</main>",))
+        check("호출 기록: 최신순 · 자동 회차 · 한도 초과 풀리는 시각",
+              log_pane.count("<tr><td") == 3 and log_pane.find("토큰 확인") < log_pane.find("자동 09시")
+              and "한도 초과 · 13:30 풀림" in log_pane)
+        check("대시보드 버튼에도 오늘 쓴 양", 'class="pill-n num">오늘 41.8K' in render_html(model_u))
+        # 늘고 · 줄고 · 그대로는 위 기록만으로 다 나오지 않아 계산 · 문구를 따로 본다
+        from nwmail.dashboard import _delta_text
+        from nwmail.usage import delta
+        up = delta({"tokens": 3000, "calls": 3, "cost": 0.3}, {"tokens": 2000, "calls": 1, "cost": 0.1})
+        down = delta({"tokens": 500, "calls": 1, "cost": 0.1}, {"tokens": 2000, "calls": 4, "cost": 0.4})
+        check("증가량 계산: 늘면 up · 얼마 · 몇 %", (up["dir"], up["tokens"], up["calls"]) == ("up", 1000, 2)
+              and abs(up["pct"] - 0.5) < 1e-9, str(up))
+        check("증가량 문구: ▲ 늘어난 양 · 퍼센트 · 견준 기간",
+              '<span class="it-d up" title="어제 2K 토큰">▲ 1K · +50%<span class="it-w"> 어제보다</span>'
+              in _delta_text(up, "어제"), _delta_text(up, "어제"))
+        check("줄면 down (토큰은 적게 쓸수록 좋아 다른 색)",
+              down["dir"] == "down" and '"it-d down"' in _delta_text(down, "어제")
+              and "▼ 1.5K · -75%" in _delta_text(down, "어제"), _delta_text(down, "어제"))
+        same = delta({"tokens": 2000, "calls": 2, "cost": 0.2}, {"tokens": 2000, "calls": 2, "cost": 0.2})
+        check("그대로면 화살표 없이 같다고만", same["dir"] == "flat"
+              and "어제와 같음" in _delta_text(same, "어제"), _delta_text(same, "어제"))
+        none = delta({"tokens": 1000, "calls": 1, "cost": 0.1}, {"tokens": 0, "calls": 0, "cost": 0})
+        check("이전 기간이 0 이면 몇 % 인지 말하지 않는다",
+              none["dir"] == "new" and none["pct"] is None
+              and "지난달 기록 없음" in _delta_text(none, "지난달"))
+
+    hdr("[6-2] 문구가 바뀐 할 일 — 완료 표시 이어붙이기")
+    with tempfile.TemporaryDirectory() as tmp:
+        with Store(Path(tmp) / "m.db") as st, FeedbackStore(Path(tmp) / "f.db") as fb:
+            st.save_mails([
+                mail(1, "[루미] 가을 시즌 이미지", "pm@lumi.example", "<r1@t>", to=[ME],
+                     when="2026-09-08T09:00:00+09:00"),
+                mail(2, "[루미] 코트 이용권", "pm@lumi.example", "<r2@t>", to=[ME],
+                     when="2026-09-08T09:00:00+09:00"),
+                mail(3, "RE: [루미] 코트 이용권", "pm@lumi.example", "<r3@t>", to=[ME],
+                     refs=["<r2@t>"], when="2026-09-10T15:00:00+09:00"),
+            ], me=ME)
+            # 표시한 뒤 새 메일이 없는 대화: 문구만 바뀐 것이므로 표시를 옮겨야 한다
+            kept_old = "가을 시즌 이미지를 갤러리 PC/MO 페이지에 반영"
+            kept_new = "한도준 책임이 전달한 가을 시즌 이미지를 갤러리 PC/MO 페이지에 반영"
+            # 표시한 뒤 새 메일이 온 대화: 다시 요청받은 일일 수 있어 옮기지 않는다
+            again_old = "코트 이용권 가격표 PC/MO 시안 확인"
+            again_new = "가격 수정된 코트 이용권 가격표 PC/MO 시안 확인"
+            put_extraction(st, "<r1@t>", {"project": "루미", "summary": "s", "status": "진행중",
+                                          "my_actions": [{"text": kept_new, "urgency": "medium"}]})
+            put_extraction(st, "<r2@t>", {"project": "루미", "summary": "s", "status": "진행중",
+                                          "my_actions": [{"text": again_new, "urgency": "medium"}]})
+            kept_id = task_id("<r1@t>", "me", kept_old)
+            again_id = task_id("<r2@t>", "me", again_old)
+            for tid, key, text, at in ((kept_id, "<r1@t>", kept_old, "2026-09-10T00:00"),
+                                       (again_id, "<r2@t>", again_old, "2026-09-09T00:00")):
+                fb.apply(tid, "done", snapshot={"text": text, "thread_key": key, "kind": "me"},
+                         now=datetime.fromisoformat(at).replace(tzinfo=timezone.utc))
+
+            m6 = build_model(st, ME, today=TODAY, now=NOW, feedback=fb)
+            texts6 = [a["text"] for a in m6["my_actions"]]
+            states6 = fb.states()
+            check("표시 뒤 새 메일이 없으면 문구가 바뀌어도 남은 일로 돌아오지 않음",
+                  kept_new not in texts6, str(texts6))
+            check("표시를 새 ID 로 옮김",
+                  task_id("<r1@t>", "me", kept_new) in states6 and kept_id not in states6)
+            check("완료 목록에는 바뀐 문구로 남음",
+                  any(d["text"] == kept_new for d in m6["done_actions"]))
+            check("표시 뒤 새 메일이 온 대화는 표시를 옮기지 않음",
+                  again_new in texts6 and again_id in states6, str(texts6))
+            check("대신 '전에 처리한 일과 비슷' 으로만 알림",
+                  any(a["text"] == again_new and a.get("similar") for a in m6["my_actions"]))
+            out6 = render_html(m6)
+            check("화면에도 비슷하다는 표시가 붙음", "전에 완료한 일과 비슷" in out6)
+            check("옮긴 기록을 남김 (reason 에 이전 ID)",
+                  [r["reason"] for r in fb.conn.execute(
+                      "SELECT reason FROM feedback_log WHERE action = 'moved'")] == [kept_id])
+
     hdr("[8] 업무명 정규화 (실제 제목)")
     from nwmail.projects import title_key, work_title
     cases = [
@@ -867,8 +1042,8 @@ def main() -> int:
     from nwmail.projects import classify
     G = "오로라"
     cases = [
-        (("[누리마케팅] AX9  프라이빗 테니스 클럽 레슨_알림톡 문구 변경 요청의 건", "jh@nurimktg.co.example"),
-         (G, "AX9 프라이빗 테니스클럽", "keyword")),
+        (("[누리마케팅] AX9  멤버십 테니스 클럽 레슨_알림톡 문구 변경 요청의 건", "jh@nurimktg.co.example"),
+         (G, "AX9 멤버십 테니스클럽", "keyword")),
         (("FW: [요청] 오로라 포럼 - 2026 가을 음악회 초청공연 (10/25)",),
          (G, "오로라 포럼", "keyword")),
         (("RE: 오로라 한결카드 (오로라 PLCC 3.0) 카카오톡 안내 알림톡 발송 요청 건 (9/8)",),
@@ -895,7 +1070,7 @@ def main() -> int:
         got = classify(*args)
         check(f"{args[0][:30]}… -> {want[1] or '미분류'} ({want[2]})", got == want, str(got))
     cases = [
-        ("[누리마케팅] AX9  프라이빗 테니스 클럽 레슨_알림톡 문구 변경 요청의 건", "AX9 프라이빗 테니스클럽",
+        ("[누리마케팅] AX9  멤버십 테니스 클럽 레슨_알림톡 문구 변경 요청의 건", "AX9 멤버십 테니스클럽",
          "알림톡 문구 변경 요청"),
         ("RE: 오로라 한결카드 (오로라 PLCC 3.0) 카카오톡 안내 알림톡 발송 요청 건 (9/8)",
          "오로라 한결카드 PLCC", "카카오톡 안내 알림톡 발송 요청"),

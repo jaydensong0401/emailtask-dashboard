@@ -13,6 +13,7 @@ import argparse
 import base64
 import hashlib
 import json
+import random
 import re
 import sys
 from datetime import datetime, timedelta, timezone
@@ -22,7 +23,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from nwmail.client import Mail                                      # noqa: E402
-from nwmail.dashboard import build_model, esc, render_html, task_id  # noqa: E402
+from nwmail.dashboard import (USAGE_PAGE, build_model, esc, render_html,  # noqa: E402
+                              render_usage_html, task_id)
 from nwmail.feedback import MARKS, FeedbackStore                    # noqa: E402
 from nwmail.filters import add_filter, add_protected, reapply       # noqa: E402
 from nwmail.server import _due_json, _mark_json                     # noqa: E402
@@ -42,7 +44,7 @@ ME = "gdhong@lumi.example"
 ME_NAME = "홍길동 선임"
 TEAM = "team@lumi.example"
 NOTICE = "데모 화면입니다 — 회사 · 사람 · 메일은 모두 가상이며 실제 메일은 들어 있지 않습니다."
-OPEN_PROJECT = "오로라 스토어"        # 처음부터 펼쳐 둘 프로젝트 카드 (업무 묶음 예시)
+OPEN_PROJECT = "오로라 운영(기타)"    # 처음부터 펼쳐 둘 프로젝트 카드 (기본 보기인 '진행 중' 에 있는 것)
 
 # 이름 -> (보낸사람 표시, 주소)
 PEOPLE = {
@@ -120,23 +122,23 @@ THREADS = [
                tasks=[task("굿즈 촬영 컷 리스트 공유", "기타", "서다은", "오로라", "2026-09-24"),
                       task("굿즈 상세 이미지 제작", "디자인", "박도윤", "루미", "2026-10-02")],
                my_actions=[act("촬영 컷 리스트 확인", "", "low")])),
-    dict(key="tennis-open", subject="[누리마케팅] AX9 프라이빗 테니스클럽 레슨 신청 페이지 오픈 요청의 건", mails=[
+    dict(key="tennis-open", subject="[누리마케팅] AX9 멤버십 테니스클럽 레슨 신청 페이지 오픈 요청의 건", mails=[
         ("강민재", at(9, 15, "16:40"), ["me"], [],
          "AX9 오너 대상 테니스 레슨 신청 페이지 오픈을 요청드립니다. 신청 기간은 9/24~10/5입니다."),
         ("me", at(9, 16, "10:15"), ["강민재"], [],
          "요청 확인했습니다. 회차별 정원 설정값을 알려주시면 23일까지 반영하겠습니다."),
         ("강민재", at(9, 18, "09:40"), ["me"], [],
          "회차별 정원은 첨부 표와 같습니다. 신청 완료 알림톡 문구도 조금 바꾸려고 합니다."),
-     ], x=dict(project="AX9 프라이빗 테니스클럽", status="진행중",
+     ], x=dict(project="AX9 멤버십 테니스클럽", status="진행중",
                summary="AX9 오너 테니스 레슨 신청 페이지 오픈 준비. 신청 기간 9/24~10/5.",
                decisions=[dec("레슨 신청 기간은 9/24~10/5로 확정", "강민재", "2026-09-16")],
                tasks=[task("레슨 신청 페이지 개발", "개발", "김하늘", "루미", "2026-09-23"),
                       task("신청 완료 알림톡 문구 변경", "수정", "강민재", "누리", "2026-09-19", "데이터")],
                my_actions=[act("레슨 회차별 정원 설정값 확인 회신", "2026-09-18", "medium")])),
-    dict(key="tennis-list", subject="RE: AX9 프라이빗 테니스클럽 참가자 명단 공유_20260917", mails=[
+    dict(key="tennis-list", subject="RE: AX9 멤버십 테니스클럽 참가자 명단 공유_20260917", mails=[
         ("이지우", at(9, 17, "10:10"), ["오세린"], ["me"],
          "1차 참가자 명단 공유드립니다. CRM 등록은 22일까지 부탁드립니다."),
-     ], x=dict(project="AX9 프라이빗 테니스클럽", status="진행중",
+     ], x=dict(project="AX9 멤버십 테니스클럽", status="진행중",
                summary="1차 참가자 명단 공유, CRM 등록 요청.",
                decisions=[],
                tasks=[task("참가자 명단 CRM 등록", "수정", "오세린", "누리", "2026-09-22", "데이터")],
@@ -295,6 +297,105 @@ RULES = [   # (종류, 문구, 메모, 구분, 켜짐)
 ]
 
 
+# ── 토큰 사용 현황 (가상 기록) ───────────────────────────────────────────────
+# 실제 호출 없이 llm_runs · llm_calls 를 채운다. 숫자는 운영 기록의 평균을 데모 크기로 줄인 어림값이다.
+USAGE_MODEL = "claude-opus-5"
+PROBE_MODEL = "claude-haiku-4-5"
+BASE_CACHE = 18650              # 호출마다 붙는 기본 지시문 (토큰 확인 호출로 잰 크기)
+RATE = (3, 15, 3.75, 0.3)       # 100만 토큰당 달러: 입력 · 출력 · 캐시 쓰기 · 캐시 읽기 (API 환산 참고값)
+LIMIT_MSG = "Claude usage limit reached · resets 1:30pm (Asia/Seoul)"
+TIMEOUT_MSG = "claude -p 응답 시간 초과 (300초)"
+DELTA_DAYS = 2                  # 이 며칠 전부터 대화 전체 대신 '지난 정리 + 새 메일' 만 보낸다
+
+
+def utc(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def cost(inp: int, out: int, cw: int, cr: int) -> float:
+    i, o, w, r = RATE
+    return round((inp * i + out * o + cw * w + cr * r) / 1_000_000, 4)
+
+
+def put_call(st: Store, at: datetime, purpose: str, trigger: str, picked: list, *, mode: str = "",
+             run_id: int | None = None, warm: bool = False, error: str = "", seconds: float = 0.0,
+             model: str = USAGE_MODEL, tokens: tuple | None = None) -> None:
+    """호출 한 줄. picked 는 (대화 열쇠, 크기) 목록 — 보낸 글자 수로 토큰을 어림한다."""
+    detail, chars, mails = [], 0, 0
+    for key, s in picked:
+        sent = s["chars"] if mode != "delta" else round(s["chars"] * 0.35)
+        detail.append([key, s["subject"], s["project"], sent, s["mails"], mode or "full"])
+        chars, mails = chars + sent, mails + s["mails"]
+    if error:                                   # 실패한 호출은 토큰이 남지 않는다
+        inp = out = cw = cr = 0
+    elif tokens:
+        inp, out, cw, cr = tokens
+    else:
+        inp = round(chars / 2.3) + 350
+        out = 600 + 360 * len(picked)
+        cw = round(chars / 9) + (0 if warm else BASE_CACHE)
+        cr = BASE_CACHE if warm else 0
+    kind = "limit" if "limit" in error else "timeout" if error else ""
+    st.conn.execute(
+        """INSERT INTO llm_calls
+           (at, purpose, trigger, run_id, backend, model, threads, mails, prompt_chars,
+            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd,
+            seconds, ok, error_kind, error, detail, mode)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (utc(at), purpose, trigger, run_id, "claude_code", "" if error else model, len(picked), mails,
+         chars, inp, out, cr, cw, cost(inp, out, cw, cr), seconds, not error, kind, error,
+         json.dumps(detail, ensure_ascii=False), mode))
+
+
+def usage_seed(st: Store, sizes: dict) -> None:
+    """최근 한 달의 자동 정리를 가상으로 쌓는다 (대시보드 머리말 '토큰 사용 현황' 버튼 → usage.html).
+
+    며칠 전부터 대화 전체(full) 대신 '지난 정리 + 새 메일'(delta)만 보내 토큰이 줄어드는 흐름,
+    한도 초과 · 시간 초과로 실패한 호출, 손으로 돌린 정리와 메일 요약 · 토큰 확인까지 한 번씩 담는다.
+    """
+    pool = list(sizes.items())
+    if not pool:
+        return
+    rnd = random.Random(20260918)
+    today = NOW.date()
+    delta_from = today - timedelta(days=DELTA_DAYS)
+    fails = {(today - timedelta(days=2), "17:00"): LIMIT_MSG,     # 한도 초과 (풀리는 시각이 같이 나온다)
+             (today - timedelta(days=6), "13:00"): TIMEOUT_MSG}
+    spin = 0
+    for back in range(29, -1, -1):
+        day = today - timedelta(days=back)
+        hours = ["09:00"] if day == today or day.weekday() >= 5 else ["09:00", "13:00", "17:00"]
+        for hm in hours:
+            at = datetime(day.year, day.month, day.day, int(hm[:2]), int(hm[3:]),
+                          tzinfo=KST) + timedelta(minutes=rnd.randint(1, 7))
+            # 주말엔 새 메일이 거의 없어 내용이 그대로인 대화만 남고 호출도 없다
+            fresh = 0 if day.weekday() >= 5 else rnd.randint(1, 3)
+            picked = [pool[(spin + i) % len(pool)] for i in range(fresh)]
+            spin += fresh
+            error = fails.get((day, hm), "")
+            mode = "delta" if day >= delta_from else "full"
+            run = st.conn.execute(
+                "INSERT INTO llm_runs (at, purpose, trigger, threads, skipped, cached, extracted,"
+                " failed, calls) VALUES (?,?,?,?,?,?,?,?,?)",
+                (utc(at), "extract", "auto", len(pool), 1, len(pool) - fresh,
+                 0 if error else fresh, fresh if error else 0, 1 if fresh else 0)).lastrowid
+            if fresh:
+                put_call(st, at, "extract", "auto", picked, mode=mode, run_id=run, error=error,
+                         seconds=0 if error else 20 + 9 * fresh + rnd.randint(0, 11))
+    # 손으로 돌린 정리 · 메일 요약 · 토큰 확인 — '어디에 쓰나' 의 네 가지를 모두 채운다
+    hand = datetime(today.year, today.month, today.day, 20, 12, tzinfo=KST) - timedelta(days=1)
+    run = st.conn.execute(
+        "INSERT INTO llm_runs (at, purpose, trigger, threads, skipped, cached, extracted, failed,"
+        " calls) VALUES (?,?,?,?,?,?,?,?,?)",
+        (utc(hand), "extract", "manual", len(pool), 1, len(pool) - 2, 2, 0, 1)).lastrowid
+    put_call(st, hand, "extract", "manual", pool[:2], mode="delta", run_id=run, seconds=38)
+    put_call(st, hand - timedelta(days=1, hours=6), "summary", "manual", pool[2:3], mode="full",
+             seconds=12, tokens=(2600, 480, 3200, BASE_CACHE))
+    put_call(st, hand - timedelta(days=6, hours=10), "verify", "manual", [], seconds=5,
+             model=PROBE_MODEL, tokens=(537, 73, BASE_CACHE, 0))
+    st.conn.commit()
+
+
 def seed() -> None:
     """데모 DB 두 개를 처음부터 다시 만든다."""
     for p in (DEMO_MAIL, DEMO_FB):
@@ -379,6 +480,10 @@ def seed() -> None:
                         "project": "하늘투어", "subject": subject["haneul-deal"]}, now=when)
             fb.token()
 
+    # 대화별 크기는 실제 코드로 재서(업무 정리에 보내는 글자 수) 사용 기록에 쓴다
+    with Store(DEMO_MAIL) as st, FeedbackStore(DEMO_FB) as fb:
+        usage_seed(st, build_model(st, me=ME, now=NOW, window_days=7, feedback=fb)["sizes"])
+
 
 def feedback_seed(fb: FeedbackStore) -> dict:
     """서버의 GET /api/feedback 과 같은 모양의 기록 (서버 없는 페이지의 처음 상태)."""
@@ -423,6 +528,18 @@ def render(server: dict | None) -> str:
     return html
 
 
+def render_usage() -> str:
+    """토큰 사용 현황 페이지 (usage.html). 대시보드 머리말의 버튼에서 넘어오고, 돌아가는 링크가 있다."""
+    with Store(DEMO_MAIL) as st, FeedbackStore(DEMO_FB) as fb:
+        model = build_model(st, me=ME, now=NOW, window_days=7, feedback=fb)
+    html = render_usage_html(model)
+    html = html.replace('initial-scale=1">', 'initial-scale=1">' + icon_links(), 1)
+    # 대시보드를 거치지 않고 바로 열 수도 있어서 여기에도 데모 안내를 둔다
+    return html.replace('<div class="usage-body" data-usage>',
+                        f'<div class="banner" role="note">{esc(NOTICE)}</div>'
+                        '<div class="usage-body" data-usage>', 1)
+
+
 def write(path: Path, html: str) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(html, encoding="utf-8")
@@ -437,10 +554,12 @@ def main() -> int:
         seed()
     PAGES.parent.mkdir(exist_ok=True)
     write(PAGES, render(None))
+    write(PAGES.with_name(USAGE_PAGE), render_usage())
     (PAGES.parent / ".nojekyll").touch()           # GitHub Pages 가 파일을 그대로 내보내도록
     with Store(DEMO_MAIL) as st:
         s = st.stats(None)
     print(f"[OK] {PAGES.relative_to(ROOT)}  (메일 {s.get('total')}통, 서버 없이 열리는 데모)")
+    print(f"[OK] {PAGES.with_name(USAGE_PAGE).relative_to(ROOT)}  (토큰 사용 현황)")
     print("  데모 서버로 열려면: python demo/serve_demo.py  -> http://127.0.0.1:8790/")
     return 0
 

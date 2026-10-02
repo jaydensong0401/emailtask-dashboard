@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import json
 import re
 import secrets
 import sqlite3
@@ -26,6 +27,8 @@ REASONS = {
     "excluded": ("남의 일", "참고만 하면 됨", "이미 다른 사람이 처리"),
     "deleted": ("할 일 아님", "중복", "이미 끝난 일", "내용이 틀림"),
 }
+# 이 사유의 현재 표시가 남아 있는 동안에는 새 답장도 AI에게 보내지 않는다.
+EXTRACT_EXCLUSION_REASONS = {"excluded": "남의 일", "deleted": "할 일 아님"}
 SNAPSHOT_FIELDS = ("text", "thread_key", "subject", "project", "deadline", "urgency",
                    "kind", "role", "assignee")
 KINDS = {"me": "내 할 일", "task": "프로젝트 할 일"}
@@ -60,6 +63,7 @@ CREATE TABLE IF NOT EXISTS feedback_log (       -- 누른 기록 전체 (되돌�
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id     TEXT NOT NULL,
     action      TEXT NOT NULL,                  -- done | excluded | deleted | open(되돌리기)
+                                                -- moved: 문구가 바뀌어 ID 를 옮김 (reason=이전 ID)
     reason      TEXT DEFAULT '',
     at          TEXT NOT NULL
 );
@@ -101,7 +105,17 @@ CREATE TABLE IF NOT EXISTS due_log (            -- 기한을 정한 기록 전�
     at          TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS task_links (
+    alias TEXT PRIMARY KEY,
+    canonical TEXT NOT NULL,
+    snapshot TEXT NOT NULL
+);
 """
+
+
+def excludes_analysis(state: dict) -> bool:
+    reason = EXTRACT_EXCLUSION_REASONS.get(state.get("label"))
+    return bool(state.get("thread_key") and reason and state.get("reason") == reason)
 
 
 class FeedbackError(ValueError):
@@ -149,6 +163,52 @@ class FeedbackStore:
     def states(self) -> dict[str, dict]:
         return {r["task_id"]: dict(r) for r in self.conn.execute("SELECT * FROM task_feedback")}
 
+    def link_tasks(self, links: dict[str, dict]) -> None:
+        """동일 업무를 연결하고 기존 기록을 하나로 합친다. 전체 변경은 한 트랜잭션.
+
+        충돌은 마지막 사용자 조작(되돌리기 포함)을 따른다. 과거 로그는 보존한다.
+        """
+        with self.conn:
+            self.conn.execute("DELETE FROM task_links")
+            for alias, snap in links.items():
+                canonical = snap["task_id"]
+                if not TASK_ID.fullmatch(alias) or not TASK_ID.fullmatch(canonical) or alias == canonical:
+                    raise FeedbackError("업무 연결 ID 가 올바르지 않습니다")
+                self.conn.execute("INSERT INTO task_links VALUES (?,?,?)",
+                                  (alias, canonical, json.dumps(snap, ensure_ascii=False)))
+                for table, log, stamp in (("task_feedback", "feedback_log", "labeled_at"),
+                                          ("task_due", "due_log", "set_at")):
+                    rows = {r["task_id"]: dict(r) for r in self.conn.execute(
+                        f"SELECT * FROM {table} WHERE task_id IN (?,?)", (alias, canonical))}
+                    action = "action" if table == "task_feedback" else "due"
+                    event = self.conn.execute(
+                        f"SELECT task_id, {action} AS action FROM {log} WHERE task_id IN (?,?) ORDER BY id DESC LIMIT 1",
+                        (alias, canonical)).fetchone()
+                    if alias not in rows:
+                        # 프로젝트 쪽에서 마지막에 되돌린 경우에도 내 할 일의 옛 표시를 지운다.
+                        # 이미 이관한 완료 기록은 alias 행이 없으므로 다시 이관하지 않는다.
+                        if event and event["task_id"] == alias and event["action"] in ("open", ""):
+                            self.conn.execute(f"DELETE FROM {table} WHERE task_id = ?", (canonical,))
+                        continue
+                    winner = rows.get(event["task_id"]) if event else max(
+                        rows.values(), key=lambda r: r[stamp])
+                    self.conn.execute(f"DELETE FROM {table} WHERE task_id IN (?,?)", (alias, canonical))
+                    if winner:
+                        winner.update({k: v for k, v in snap.items() if k in winner and v})
+                        winner["task_id"] = canonical
+                        cols = list(winner)
+                        self.conn.execute(
+                            f"INSERT INTO {table} ({','.join(cols)}) VALUES ({','.join('?' for _ in cols)})",
+                            [winner[k] for k in cols])
+
+    def _linked(self, task_id: str, snapshot: dict | None) -> tuple[str, dict]:
+        row = self.conn.execute(
+            "SELECT canonical, snapshot FROM task_links WHERE alias = ? OR canonical = ? LIMIT 1",
+            (task_id, task_id)).fetchone()
+        if row:
+            return row["canonical"], {**(snapshot or {}), **json.loads(row["snapshot"])}
+        return task_id, snapshot or {}
+
     def recent(self, days: int = 30, now: datetime | None = None) -> list[dict]:
         """최근 N일 안에 표시한 할 일, 최근 표시부터."""
         since = ((now or datetime.now(timezone.utc)) - timedelta(days=days)).isoformat()
@@ -170,6 +230,8 @@ class FeedbackStore:
         at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
         snap = {k: str((snapshot or {}).get(k) or "")[:SNAPSHOT_MAX] for k in SNAPSHOT_FIELDS}
         with self.conn:
+            task_id, linked = self._linked(task_id, snap)
+            snap.update({k: str(v)[:SNAPSHOT_MAX] for k, v in linked.items() if k in SNAPSHOT_FIELDS})
             self.conn.execute(
                 "INSERT INTO feedback_log (task_id, action, reason, at) VALUES (?,?,?,?)",
                 (task_id, label, reason, at))
@@ -188,6 +250,52 @@ class FeedbackStore:
                 (task_id, label, reason, at, *(snap[k] for k in SNAPSHOT_FIELDS)))
         return dict(self.conn.execute(
             "SELECT * FROM task_feedback WHERE task_id = ?", (task_id,)).fetchone())
+
+    def for_threads(self, keys: list[str]) -> dict[str, list[dict]]:
+        """대화별 '이미 처리했다'고 표시한 할 일.
+
+        업무 정리 프롬프트에 실어 같은 일이 다시 뽑히지 않게 한다 (extract.render_thread).
+        """
+        out: dict[str, list[dict]] = {}
+        for i in range(0, len(keys), 300):          # sqlite 변수 상한을 넘지 않게 나눠 읽는다
+            chunk = [k for k in keys[i:i + 300] if k]
+            if not chunk:
+                continue
+            marks = ",".join("?" for _ in chunk)
+            for r in self.conn.execute(
+                    f"SELECT * FROM task_feedback WHERE thread_key IN ({marks})"
+                    " ORDER BY labeled_at", chunk):
+                out.setdefault(r["thread_key"], []).append(dict(r))
+        return out
+
+    def move(self, old_id: str, new_id: str, text: str = "",
+             now: datetime | None = None) -> dict | None:
+        """문구만 바뀐 같은 일에 표시를 그대로 옮긴다 (직접 정한 기한도 함께).
+
+        업무 정리를 다시 돌리면 같은 일도 문구가 달라져 ID(내용 해시)가 바뀐다. 그대로 두면
+        끝낸 일이 '남은 일'로 다시 올라오므로, 같은 일이 분명한 것만 옮긴다.
+        무엇을 옮길지는 dashboard.adopt_marks 가 고른다 (새 메일이 온 대화는 옮기지 않는다).
+        """
+        for tid in (old_id, new_id):
+            if not TASK_ID.match(tid or ""):
+                raise FeedbackError("할 일 ID 가 올바르지 않습니다")
+        row = self.conn.execute("SELECT * FROM task_feedback WHERE task_id = ?",
+                                (old_id,)).fetchone()
+        if row is None or old_id == new_id:
+            return dict(row) if row else None
+        at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
+        with self.conn:
+            self.conn.execute("INSERT INTO feedback_log (task_id, action, reason, at)"
+                              " VALUES (?,?,?,?)", (new_id, "moved", old_id, at))
+            for table in ("task_feedback", "task_due"):
+                self.conn.execute(f"DELETE FROM {table} WHERE task_id = ?", (new_id,))
+                self.conn.execute(f"UPDATE {table} SET task_id = ? WHERE task_id = ?",
+                                  (new_id, old_id))
+            if text:
+                self.conn.execute("UPDATE task_feedback SET text = ? WHERE task_id = ?",
+                                  (text[:SNAPSHOT_MAX], new_id))
+        return dict(self.conn.execute("SELECT * FROM task_feedback WHERE task_id = ?",
+                                      (new_id,)).fetchone())
 
     # ── 대화 · 프로젝트 표시 (답변완료 · 프로젝트 완료 · 삭제) ─────────────────
     def marks(self, target: str) -> dict[str, dict]:
@@ -252,6 +360,8 @@ class FeedbackStore:
                 raise FeedbackError(f"기한은 올해 앞뒤 {DUE_YEARS}년 안에서만 정할 수 있습니다")
         snap = {k: str((snapshot or {}).get(k) or "")[:SNAPSHOT_MAX] for k in SNAPSHOT_FIELDS}
         with self.conn:
+            task_id, linked = self._linked(task_id, snap)
+            snap.update({k: str(v)[:SNAPSHOT_MAX] for k, v in linked.items() if k in SNAPSHOT_FIELDS})
             self.conn.execute("INSERT INTO due_log (task_id, due, at) VALUES (?,?,?)",
                               (task_id, due, at.isoformat()))
             if not due:

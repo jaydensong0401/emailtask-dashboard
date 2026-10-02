@@ -152,10 +152,11 @@ class ClaudeCodeSummarizer:
 
     def summarize(self, mails: list[Mail]) -> dict:
         prompt = f"{SYSTEM}\n\n{build_prompt(mails)}{JSON_INSTRUCTION}"
-        out = self.cli.run_prompt(prompt, model=self.model,
-                                  timeout=self.timeout, exe=self.exe)
-        result = _extract_json(out)
+        res = self.cli.run_prompt_json(prompt, model=self.model,
+                                       timeout=self.timeout, exe=self.exe)
+        result = _extract_json(res.text)
         result["_backend"] = f"claude_code({self.model or 'default'})"
+        result["_usage"] = res.usage()
         return result
 
 
@@ -221,9 +222,13 @@ class AnthropicSummarizer:
             raise RuntimeError(f"모델이 응답을 거부했습니다: {response.stop_details}")
         result = _extract_json(next(b.text for b in response.content if b.type == "text"))
         result["_backend"] = f"api({self.model})"
+        u = response.usage
         result["_usage"] = {
-            "input_tokens": response.usage.input_tokens,
-            "output_tokens": response.usage.output_tokens,
+            "model": self.model,
+            "input_tokens": u.input_tokens,
+            "output_tokens": u.output_tokens,
+            "cache_read_tokens": getattr(u, "cache_read_input_tokens", 0) or 0,
+            "cache_write_tokens": getattr(u, "cache_creation_input_tokens", 0) or 0,
         }
         return result
 

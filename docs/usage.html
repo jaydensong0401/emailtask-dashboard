@@ -1,0 +1,671 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="icon" type="image/png" sizes="32x32" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAANZSURBVFhHxddJTBNRGAfwd/ToUdpiUVGmRQ/ePMLNAxpP2tIO3UQRREBZLKUd1LYEE6kHRaCyqAfjggcuBCUsESgugBuiaDQFtbilJirVRPOZNzKTee9VgWhhkl/a6fe97/+lcxqEqEvnE3ak+z01er+nN90vwP+AZ+l9noDeK1i1grCCzhQvvSCs0vk8nXqfBxJJ53VPbPQJHBGeViOk6LyuqN5bBUvDFeO8lVvkBXRHK3t1x1ywxCbEx8EJToPuSCUsB05wHkZctfMMV+2ERNoZPAXto7eBb22ka52Ic1eMcZ4KSJTd54Iw++0r/PzxHaY+viXr7oooSnOXQ6I4FOFYQ38304PSqsogERxtTUR4+8gw04OhDa5SiMcUPM38tlD21kYi/OrdYaZHgjY4DwKtofe6ePDZzCvIPH6Mqf+NvaWBCg8xPUpo/eESoE19mJEH4O8ZtUeZnnjszWfI8DshpoeG1pcXA025ABb9/Am2BY4zfUr2s/Vk+O0hpicelFpWBDR6AWmJrLpaphezBXH4FyKc7vkTlFpaCDRpgZnoBxiffikPxiG2plNEL74nwweJetaJGugYuQXZ9SeZHAytO7QfaOH3vxfAn5urymB8+gWxxN6WBrHPSoVfuTXIzBp98UysTUammRqG1pUUAC38PjK3QES815cVQ9/4fTkIa+67QYUPMHPizaKhtcX5QFMekn7TlRZB1727xBJy+PAAM+Nvs5TQmgN5QFMeomuXQzeJcHxP9yx0FoZSCvcCTXmIrmFne7pgNvZF/KRrtPlmoZSCPUALv5s79C7C1BZrvllIm58LtKEnj+S/eNOhIqa+GJNvpuQF6BqGtPscQKvruCYvcKG/m6kv1MG2oDyn9+EYU8fQ6jw70DKFSvEZS4cnX4dhaOLRoow8fyqfxwqC9UwOhlbvsUE8zvMtxIB/cWmgn5kvQZrd1pfJuVaIZ7v/CPQ8GCX+jcUYfPwQ8htPM3MlmlxrDCU7ci4mO3JgWdj5EFLb+GKNnYflYQ4grcWyUm0zRTQ2Mywltc0U01osKeKbkdpiylBbTbCUVJZsq+LtECGN2bBVxRsj6hwjJJKKN8RU5l1kuHThx6EyGwNJvCGk4g24+b9J4g1jSbyhNcliJN6MfwFLtyC2KbrltwAAAABJRU5ErkJggg=="><link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMCIgeTE9IjAiIHgyPSIwIiB5Mj0iMSI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjMmI4NzdmIi8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjMWE1YzU3Ii8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTQiIGZpbGw9InVybCgjZykiLz48cGF0aCBkPSJNNTEgMzFWNDJBNyA3IDAgMCAxIDQ0IDQ5SDIwQTcgNyAwIDAgMSAxMyA0MlYyMkwyOSAzN0w1MyAxMyIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmRmY2Y5IiBzdHJva2Utd2lkdGg9IjUuNSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+PC9zdmc+Cg=="><link rel="apple-touch-icon" href="data:image/png;base64,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"><link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Crect%20width%3D%2232%22%20height%3D%2232%22%20rx%3D%227.5%22%20fill%3D%22%231f6f6a%22%2F%3E%3Crect%20x%3D%223.5%22%20y%3D%228%22%20width%3D%2220%22%20height%3D%2214.5%22%20rx%3D%222.5%22%20fill%3D%22%23fdfcf9%22%2F%3E%3Cpath%20d%3D%22M4.6%209.6%2013.5%2016l8.9-6.4%22%20fill%3D%22none%22%20stroke%3D%22%231f6f6a%22%20stroke-width%3D%222.4%22%20stroke-linejoin%3D%22round%22%20stroke-linecap%3D%22round%22%2F%3E%3Ccircle%20cx%3D%2223.5%22%20cy%3D%2223.5%22%20r%3D%228.5%22%20fill%3D%22%231f6f6a%22%2F%3E%3Ccircle%20cx%3D%2223.5%22%20cy%3D%2223.5%22%20r%3D%226.8%22%20fill%3D%22%23eb6834%22%2F%3E%3Cpath%20d%3D%22m20.4%2023.7%202.2%202.2%204.1-4.6%22%20fill%3D%22none%22%20stroke%3D%22%23fff%22%20stroke-width%3D%222.6%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%2F%3E%3C%2Fsvg%3E"><title>토큰 사용 현황 · 메일 업무 대시보드</title><style>:root{color-scheme:light;
+ --page:#f2f1ec;--card:#fdfcf9;--side:#faf9f5;--surface:#fff;
+ --ink:#1c1b18;--ink-2:#57534a;--muted:#6f6a60;
+ --line:rgba(0,0,0,.08);--line-2:rgba(0,0,0,.07);--box:#c9c4b8;--switch:#ddd9cf;
+ --acc:#1f6f6a;--acc-bg:#e6efee;--acc-ink:#fff;
+ --warn:#b06a1e;--warn-bg:#f3e6d4;--warn-soft:#d9c59a;--crit:#b3261e;--caution:#c28a00;
+ --tag:#eeeae0;--tag-ink:#6b6252;--track:#eeeae0;--new-bg:#e6efee;--new-ink:#14514d;
+ --shadow:0 1px 2px rgba(0,0,0,.04),0 10px 30px -18px rgba(0,0,0,.25);--focus:#1f6f6a;
+ --s0:#898781;--s1:#2a78d6;--s2:#eb6834;--s3:#1baf7a;--s4:#eda100;
+ --s5:#e87ba4;--s6:#008300;--s7:#4a3aa7;--s8:#e34948}@media (prefers-color-scheme:dark){:root:where(:not([data-theme="light"])){color-scheme:dark;
+ --page:#0c1413;--card:#15201f;--side:#121c1b;--surface:#1b2927;
+ --ink:#f2f1ec;--ink-2:#c3d0cd;--muted:#98a8a4;
+ --line:rgba(255,255,255,.09);--line-2:rgba(255,255,255,.07);--box:#5d6e6a;
+ --switch:rgba(255,255,255,.2);
+ --acc:#5fd2c0;--acc-bg:rgba(95,210,192,.12);--acc-ink:#0f1a19;
+ --warn:#e8b476;--warn-bg:rgba(224,160,74,.18);--warn-soft:#6b5a3e;--crit:#f08a7e;
+ --caution:#e8c15a;--tag:rgba(255,255,255,.08);--tag-ink:#c3d0cd;
+ --track:rgba(255,255,255,.08);--new-bg:rgba(95,210,192,.18);--new-ink:#9fe7da;
+ --shadow:0 1px 2px rgba(0,0,0,.3),0 10px 30px -18px rgba(0,0,0,.6);--focus:#5fd2c0;
+ --s1:#3987e5;--s2:#d95926;--s3:#199e70;--s4:#c98500;--s5:#d55181;--s6:#008300;
+ --s7:#9085e9;--s8:#e66767}}:root[data-theme="dark"]{color-scheme:dark;
+ --page:#0c1413;--card:#15201f;--side:#121c1b;--surface:#1b2927;
+ --ink:#f2f1ec;--ink-2:#c3d0cd;--muted:#98a8a4;
+ --line:rgba(255,255,255,.09);--line-2:rgba(255,255,255,.07);--box:#5d6e6a;
+ --switch:rgba(255,255,255,.2);
+ --acc:#5fd2c0;--acc-bg:rgba(95,210,192,.12);--acc-ink:#0f1a19;
+ --warn:#e8b476;--warn-bg:rgba(224,160,74,.18);--warn-soft:#6b5a3e;--crit:#f08a7e;
+ --caution:#e8c15a;--tag:rgba(255,255,255,.08);--tag-ink:#c3d0cd;
+ --track:rgba(255,255,255,.08);--new-bg:rgba(95,210,192,.18);--new-ink:#9fe7da;
+ --shadow:0 1px 2px rgba(0,0,0,.3),0 10px 30px -18px rgba(0,0,0,.6);--focus:#5fd2c0;
+ --s1:#3987e5;--s2:#d95926;--s3:#199e70;--s4:#c98500;--s5:#d55181;--s6:#008300;
+ --s7:#9085e9;--s8:#e66767}
+*{box-sizing:border-box}[hidden]{display:none!important}
+body{margin:0;background:var(--page);color:var(--ink);-webkit-font-smoothing:antialiased;
+ font:14px/1.5 Pretendard,"Pretendard Variable",-apple-system,BlinkMacSystemFont,"Segoe UI",
+ "Malgun Gothic","Apple SD Gothic Neo",system-ui,sans-serif}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 20px 64px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);overflow:hidden}
+.num{font-variant-numeric:tabular-nums}
+.c-acc{color:var(--acc)}.c-warn{color:var(--warn)}
+ul{list-style:none;margin:0;padding:0}
+code{font-family:ui-monospace,Consolas,monospace;font-size:12px;background:var(--side);
+ border:1px solid var(--line);border-radius:4px;padding:0 4px;color:var(--ink)}
+
+.hero{display:flex;justify-content:space-between;align-items:flex-start;gap:16px 24px;flex-wrap:wrap;padding:34px 40px 26px}
+.eyebrow{margin:0;font-size:11px;font-weight:500;letter-spacing:.14em;color:var(--muted)}
+h1{margin:12px 0 8px;font-size:30px;line-height:1.2;font-weight:600;letter-spacing:-.01em}
+h1 em{font-style:normal}
+.sub{margin:0;font-size:13px;color:var(--muted)}
+.hero-side{display:flex;flex-direction:column;align-items:flex-end;gap:10px;padding-top:6px}
+.tools{display:flex;flex-wrap:wrap;gap:8px}
+.pill{display:inline-flex;align-items:center;gap:8px;padding:8px 14px;border:1px solid var(--line);
+ border-radius:999px;background:var(--surface);font:inherit;font-size:12.5px;color:var(--ink-2);cursor:pointer}
+/* 머리말 오른쪽: 토큰 사용 현황(따로 만든 페이지로 감) · 테마 */
+.hero-acts{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+a.pill{text-decoration:none}
+a.pill:hover{border-color:var(--box);background:var(--side)}
+.pill-n{padding:1px 7px;border-radius:5px;background:var(--tag);color:var(--tag-ink);font-size:11.5px;font-weight:600}
+.pill-d{font-size:11.5px;font-weight:600;font-variant-numeric:tabular-nums}
+.pill-d.up{color:var(--warn)}.pill-d.down{color:var(--acc)}
+.pill-go{width:6px;height:6px;margin:0 1px 0 -2px;border-top:1.5px solid var(--muted);
+ border-right:1.5px solid var(--muted);transform:rotate(45deg)}
+/* 토큰 사용 현황 페이지 */
+.usage-page .hero{align-items:flex-start;padding:30px 40px 24px}
+.usage-page .hero-t{display:block}
+.usage-page h1{margin:8px 0 8px}
+.back{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted);text-decoration:none}
+.back:hover{color:var(--ink-2)}
+.back-a{width:6px;height:6px;border-bottom:1.5px solid currentColor;border-left:1.5px solid currentColor;
+ transform:rotate(45deg)}
+.usage-body{padding:4px 40px 36px}
+.usage-body>.seg{margin:0 0 20px}
+.page-foot{margin:14px 2px 0;font-size:12px;color:var(--muted)}
+.switch input{appearance:none;position:relative;flex:none;width:26px;height:15px;margin:0;border-radius:999px;
+ background:var(--switch);cursor:pointer;transition:background .15s}
+.switch input::after{content:"";position:absolute;top:2px;left:2px;width:11px;height:11px;border-radius:50%;
+ background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.2);transition:transform .15s}
+.switch input:checked{background:var(--acc)}.switch input:checked::after{transform:translateX(11px)}
+.runs{margin:0;font-size:12px;color:var(--muted)}.runs b{font-weight:500;color:var(--ink)}
+.banner{background:var(--side);border:1px solid var(--line);border-radius:10px;
+ padding:10px 14px;color:var(--ink-2);margin:0 0 16px;font-size:13px}
+.card>.banner{margin:0 40px 20px}
+.banner.warn{border-color:var(--warn);color:var(--ink)}
+.recipient-alerts p{margin:6px 0;color:var(--ink-2)}
+.recipient-alerts li{padding:8px 0;border-top:1px solid var(--line);overflow-wrap:anywhere}
+.recipient-alerts li span{display:block;font-size:12px;color:var(--muted)}
+
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.hero{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:24px 40px}
+.hero-t{display:flex;align-items:center;flex-wrap:wrap;gap:8px 16px;min-width:0}
+.hero .sub{overflow-wrap:anywhere}
+.digest-overview{display:grid;grid-template-columns:minmax(0,1.62fr) minmax(0,1fr);gap:48px;padding:0 40px 28px}
+.work-overview{min-width:0}
+.kpis{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:40px;padding:0}
+.kpi{min-width:0}
+.kpi p,.kpi h2{margin:0}
+.kpi .l,.system-summary h2{font-size:12px;font-weight:600;color:var(--muted)}
+.kpi .v{display:flex;align-items:baseline;gap:10px;margin-top:10px}
+.kpi .v b{font-size:48px;line-height:1.2;font-weight:650;letter-spacing:-1.5px}
+.kpi .u{font-size:13px;color:var(--muted)}
+.kpi .c{margin-top:8px;font-size:12px;color:var(--ink);line-height:1.7;word-break:keep-all;overflow-wrap:anywhere}
+.deadline-counts{display:flex;flex-wrap:wrap;gap:4px 16px}
+.deadline-counts>span{white-space:nowrap}
+.deadline-counts>span>span{font-weight:650}
+.project-summary{margin:20px 0 0;padding-top:14px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}
+.project-summary b{color:var(--ink);font-weight:650}
+.system-summary{min-width:0;padding:16px 20px;background:var(--side);border:1px solid var(--line);border-radius:12px}
+.system-summary h2{margin:0 0 10px}
+.system-summary dl{margin:0;display:grid;gap:8px;font-size:12px;line-height:1.65}
+.system-summary dl>div{display:grid;grid-template-columns:56px minmax(0,1fr);gap:12px}
+.system-summary dt{color:var(--muted)}
+.system-summary dd{margin:0;overflow-wrap:anywhere;word-break:keep-all}
+.system-summary b{font-weight:400}
+.view-toolbar{display:flex;align-items:center;gap:16px;padding-right:40px;border-top:1px solid var(--line);box-shadow:inset 0 -1px 0 var(--line)}
+.view-toolbar .tabs{flex:1;min-width:0;box-shadow:none}
+.view-toolbar .switch{flex:none;border:0;padding:0;background:transparent;gap:10px;color:var(--muted);white-space:nowrap}
+.view-toolbar .switch input{width:32px;height:18px}
+.view-toolbar .switch input::after{width:14px;height:14px}
+.view-toolbar .switch input:checked::after{transform:translateX(14px)}
+.card>.banner:first-child{margin:0;padding:8px 40px;border:0;border-bottom:1px solid var(--line);border-radius:0;font-size:12px}
+.card>.banner.warn:first-child{border-bottom-color:var(--warn)}
+
+.tabs{display:flex;gap:4px;padding:0 30px;box-shadow:inset 0 -1px 0 var(--line);overflow:auto hidden}
+.tab{appearance:none;background:none;border:0;border-bottom:2px solid transparent;
+ padding:14px 10px 12px;font:inherit;font-size:13.5px;color:var(--muted);cursor:pointer;white-space:nowrap}
+.tab[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--acc);font-weight:600}
+.cnt{display:inline-block;min-width:18px;margin-left:6px;padding:0 6px;border-radius:999px;
+ background:var(--tag);color:var(--tag-ink);font-size:11px;font-weight:500;text-align:center}
+.pad{padding:28px 36px 40px}
+
+.today{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(0,1fr)}
+.col-main{padding:34px 36px 40px;border-right:1px solid var(--line);min-width:0}
+.col-side{padding:34px 36px 40px;background:var(--side);min-width:0}
+.sec-h{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:0 0 18px}
+.sec-h.gap{margin-top:38px}
+.sec-h h2{margin:0;font-size:16px;line-height:1.2;font-weight:600}
+.sec-m{flex:none;font-size:11.5px;color:var(--muted)}
+.note{margin:-6px 0 14px;font-size:12.5px;color:var(--muted)}
+
+.task.done .t{text-decoration:line-through;color:var(--muted)}
+.task:not([data-state="open"]) .t .rtag{opacity:.55}
+.hide-done .task.done{display:none}
+
+.seg{display:inline-flex;flex-wrap:wrap;gap:2px;padding:3px;border-radius:999px;background:var(--tag)}
+.seg button{appearance:none;border:0;border-radius:999px;background:none;padding:6px 12px;font:inherit;
+ font-size:12.5px;color:var(--muted);cursor:pointer;white-space:nowrap}
+.seg button b{font-weight:600;margin-left:2px}
+.seg button[aria-pressed="true"]{background:var(--surface);color:var(--ink);font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+#tab-today .note{margin:-8px 0 16px}
+#srv-note{margin:0 0 16px}
+.acts{display:flex;flex-direction:column;gap:12px}
+.acts .grp{display:flex;align-items:center;gap:8px;margin:14px 0 -2px;font-size:12.5px;font-weight:600;color:var(--ink-2)}
+.acts .grp:first-child{margin-top:0}
+.acts .grp::after{content:"";flex:1;height:1px;background:var(--line)}
+.grp .gn{min-width:20px;padding:1px 7px;border-radius:999px;background:var(--tag);color:var(--tag-ink);
+ font-size:11px;font-weight:600;line-height:16px;text-align:center}
+.grp.lv-overdue{color:var(--crit)}.grp.lv-today{color:var(--warn)}
+.act{padding:18px 22px 16px 20px;background:var(--surface);border:1px solid var(--line-2);border-left-width:3px;border-radius:12px}
+.act[data-state="open"][data-level="overdue"]{border-left-color:var(--crit)}
+.act[data-state="open"][data-level="today"]{border-left-color:var(--warn)}
+.act[data-state="open"][data-level="soon"]{border-left-color:var(--caution)}
+.act[data-state="done"],.act[data-state="excluded"],.act[data-state="deleted"]{background:var(--side)}
+.act p{margin:0}
+.tg{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;margin-bottom:9px;font-size:11.5px;color:var(--muted)}
+.tag{display:inline-flex;align-items:center;gap:4px;padding:5px 8px;border-radius:5px;background:var(--tag);
+ color:var(--tag-ink);font-size:10.5px;font-weight:500;line-height:1;letter-spacing:.04em}
+.tag i{font-style:normal;font-size:9px}
+.tag.u-high{background:var(--warn-bg);color:var(--warn)}
+.tag.u-medium{background:var(--acc-bg);color:var(--acc)}
+.pj{display:inline-flex;align-items:center;gap:5px}
+.due{font-weight:500;color:var(--ink-2)}.due.lv-today{color:var(--warn)}.due.lv-overdue{color:var(--crit)}
+.due.lv-later{font-weight:400;color:var(--muted)}.due.lv-none{display:none}
+.man{display:none;padding:3px 6px;border-radius:4px;background:var(--acc-bg);color:var(--acc);font-size:10.5px;
+ font-weight:600;line-height:1}
+[data-manual="1"] .man{display:inline-block}
+.act .t{font-size:15px;line-height:1.45;font-weight:600;color:var(--ink)}
+.tg .pj{margin-left:auto;color:var(--ink-2)}
+.ctx{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:8px 16px;margin:12px 0 0;padding:12px 0 0;
+ border-top:1px dashed var(--line);font-size:12.5px;line-height:1.6}
+.ctx>div{display:contents}
+.ctx dt{color:var(--muted);font-weight:500;white-space:nowrap}
+.ctx dd{margin:0;min-width:0;color:var(--ink-2)}
+.act:not([data-state="open"]) .ctx{display:none}
+.stt{display:inline-block;margin-right:7px;padding:0 6px;border-radius:4px;background:var(--tag);color:var(--tag-ink);
+ font-size:11px;font-weight:600;line-height:18px;vertical-align:1px}
+.stt.s-hold{background:var(--warn-bg);color:var(--warn)}.stt.s-done{background:var(--acc-bg);color:var(--acc)}
+.oth{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px}.oth+.oth{margin-top:4px}
+.oth .nm{color:var(--ink);font-weight:500}.oth.more{font-size:12px;color:var(--muted)}
+.tf{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;margin-top:14px;font-size:12px;color:var(--muted)}
+.mail{position:relative;display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%;margin:0 auto 0 -7px;
+ padding:4px 8px 4px 7px;border-radius:6px;color:var(--ink-2);cursor:help}
+.mail:empty{padding:0;cursor:auto}
+.mail:hover,.mail:focus-visible{background:var(--tag)}
+.mail .ic{font-style:normal;color:var(--muted)}
+.mail .mi{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+ text-decoration:underline dotted var(--box);text-underline-offset:3px}
+.mail .rep{flex:none;font-weight:600;color:var(--warn)}
+.tip{position:absolute;left:0;bottom:calc(100% + 8px);z-index:6;width:max-content;max-width:min(480px,calc(100vw - 56px));
+ padding:9px 12px 10px;border-radius:10px;background:var(--ink);color:var(--card);box-shadow:0 8px 24px rgba(0,0,0,.22);
+ font-size:13px;font-weight:500;line-height:1.5;white-space:normal;overflow-wrap:anywhere;cursor:text;
+ opacity:0;visibility:hidden;transform:translateY(4px);transition:opacity .12s,transform .12s,visibility 0s linear .12s}
+.tip::after{content:"";position:absolute;left:0;right:0;top:100%;height:10px}
+.tip-l{display:block;margin-bottom:2px;font-size:10.5px;font-weight:600;letter-spacing:.04em;opacity:.65}
+.mail:hover .tip,.mail:focus .tip{opacity:1;visibility:visible;transform:none;
+ transition:opacity .12s linear .15s,transform .12s ease .15s,visibility 0s linear .15s}
+.mail.tip-off .tip{opacity:0;visibility:hidden;transition:none}
+/* 제목 옆 (!) 도움말: 말풍선은 제목 줄(.sec-h) 폭 안에서 아래로 연다 — 좁은 화면에서도 밖으로 넘치지 않게 */
+.sec-h.has-hint{position:relative}
+.sec-t{display:flex;align-items:center;gap:6px;min-width:0}
+.infotip{display:inline-flex;flex:none;border-radius:50%;color:var(--muted);cursor:help}
+.infotip .hi{display:inline-grid;place-items:center;width:16px;height:16px;border:1.5px solid currentColor;
+ border-radius:50%;font-size:10.5px;font-weight:700;line-height:1;font-style:normal}
+.infotip:hover,.infotip:focus-visible{color:var(--ink)}
+.infotip .tip{left:0;top:calc(100% + 8px);bottom:auto;max-width:min(560px,100%);white-space:pre-line;
+ transform:translateY(-4px);cursor:auto}
+.infotip .tip::after{top:auto;bottom:100%;height:22px}
+.infotip:hover .tip,.infotip:focus .tip{opacity:1;visibility:visible;transform:none;
+ transition:opacity .12s linear .15s,transform .12s ease .15s,visibility 0s linear .15s}
+.infotip.tip-off .tip{opacity:0;visibility:hidden;transition:none}
+.st:empty{display:none}
+.st{flex:none;padding:3px 9px;border-radius:999px;background:var(--tag);color:var(--tag-ink);font-size:11.5px;font-weight:500}
+.act[data-state="done"] .st,.sit[data-state="done"] .st{background:var(--acc-bg);color:var(--acc)}
+.ctl{display:inline-flex;flex:none;flex-wrap:wrap;gap:6px}
+.btn{appearance:none;padding:5px 11px;border:1px solid var(--line);border-radius:999px;background:var(--surface);
+ font:inherit;font-size:12px;color:var(--ink-2);cursor:pointer;white-space:nowrap}
+.btn:hover:not(:disabled){border-color:var(--box);color:var(--ink)}
+.btn:disabled{cursor:not-allowed;opacity:.5}
+.btn.ok{border-color:color-mix(in srgb,var(--acc) 45%,transparent);color:var(--acc);font-weight:600}
+.btn.ok:hover:not(:disabled){background:var(--acc);border-color:var(--acc);color:var(--acc-ink)}
+.act .undo,.task .undo,.sit .undo,
+.act:not([data-state="open"]) .ctl .btn:not(.undo),
+.task:not([data-state="open"]) .ctl .btn:not(.undo),
+.sit:not([data-state="open"]) .ctl .btn:not(.undo){display:none}
+.act:not([data-state="open"]) .undo,.task:not([data-state="open"]) .undo,
+.sit:not([data-state="open"]) .undo{display:inline-block}
+.why{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:12px;padding-top:12px;border-top:1px dashed var(--line)}
+.why-l{margin-right:4px;font-size:12px;font-weight:600;color:var(--ink-2)}
+.why-note{flex-basis:100%;font-size:12px;color:var(--muted)}
+.why .btn.skip{color:var(--muted)}
+.toast{position:fixed;left:50%;bottom:24px;z-index:10;display:flex;align-items:center;gap:12px;max-width:calc(100% - 32px);
+ transform:translateX(-50%);padding:10px 12px 10px 16px;border-radius:12px;background:var(--ink);color:var(--card);
+ font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.2)}
+.toast button{appearance:none;border:0;border-radius:8px;padding:5px 10px;background:rgba(127,127,127,.25);
+ font:inherit;font-size:12.5px;font-weight:600;color:inherit;cursor:pointer}
+
+.progs{display:flex;flex-direction:column;gap:1px;background:var(--line);border:1px solid var(--line-2);border-radius:12px;overflow:hidden}
+.progress-tabs{margin-bottom:12px}
+.prow{display:flex;align-items:center;background:var(--surface)}
+.prow[data-pstate="delayed"] .pv{color:var(--crit)}
+.prow:hover{background:var(--side)}
+.pgo{appearance:none;flex:1;min-width:0;display:grid;grid-template-columns:190px minmax(0,1fr) 92px;gap:20px;align-items:center;
+ margin:0;padding:18px 8px 18px 22px;border:0;background:none;font:inherit;color:inherit;text-align:left;cursor:pointer}
+.prow>.kb{padding-right:14px}
+#progs-empty{margin-top:4px}
+
+.kb{flex:none;display:inline-flex}
+.kb-btn{appearance:none;display:grid;place-items:center;width:28px;height:28px;margin:-4px 0;padding:0;border:0;
+ border-radius:7px;background:none;color:var(--muted);cursor:pointer}
+.kb-btn svg{fill:currentColor}
+.kb-btn:hover:not(:disabled),.kb-btn[aria-expanded="true"]{background:var(--tag);color:var(--ink)}
+.kb-btn:disabled{cursor:not-allowed;opacity:.4}
+.kb-menu{position:fixed;z-index:20;display:flex;flex-direction:column;min-width:156px;padding:4px;
+ background:var(--surface);border:1px solid var(--line);border-radius:10px;box-shadow:0 10px 28px rgba(0,0,0,.18)}
+.kb-menu button{appearance:none;padding:8px 10px;border:0;border-radius:6px;background:none;font:inherit;
+ font-size:13px;color:var(--ink);text-align:left;cursor:pointer;white-space:nowrap}
+.kb-menu button:hover,.kb-menu button:focus-visible{background:var(--tag);outline:none}
+.kb-menu [data-wmark="deleted"],.kb-menu [data-pmark="deleted"]{color:var(--crit)}
+[data-pstate][data-manual-state=""] .kb-menu [data-pmark="open"],
+[data-pstate="done"] .kb-menu [data-pmark="done"],
+[data-pstate="deleted"] .kb-menu [data-pmark="done"],
+[data-pstate="deleted"] .kb-menu [data-pmark="deleted"]{display:none}
+.pn{display:block;min-width:0}
+.pname{display:block;font-size:13.5px;font-weight:500;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pc{display:block;margin-top:4px;font-size:11px;color:var(--muted)}
+.track{display:block;height:7px;border-radius:999px;background:var(--track);overflow:hidden}
+.fill{display:block;width:0;height:100%;border-radius:inherit;background:var(--acc);transition:width .2s}
+.pv{text-align:right;font-size:12px;font-weight:500;color:var(--ink-2)}
+
+.waits{display:flex;flex-direction:column;gap:14px}
+.wait{padding:18px 20px;background:var(--surface);border:1px solid var(--line-2);border-left:3px solid var(--warn-soft);border-radius:12px}
+.wait.old{border-left-color:var(--warn)}
+.wait p{margin:0}
+.wh{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.wf{flex:1 1 auto;min-width:0;font-size:12.5px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wd{flex:none;font-size:11px;color:var(--muted)}.wait.old .wd{color:var(--warn);font-weight:500}
+.wh .kb{margin-right:-8px}
+.wfoot{display:none;align-items:center;justify-content:space-between;gap:8px;margin-top:12px}
+.wait:not([data-wstate="open"]) .wfoot{display:flex}
+.wait:not([data-wstate="open"]) .kb{display:none}
+.wait:not([data-wstate="open"]){border-left-color:var(--line);background:var(--side)}
+.wait:not([data-wstate="open"]) .ws{color:var(--muted)}
+.wfoot .undo{display:inline-block}
+.handled summary{padding:14px 0 0;border-top:0;font-size:12.5px;color:var(--muted)}
+.handled .waits{margin-top:12px}
+.wait .ws{margin-top:9px;font-size:13px;line-height:1.5;color:var(--ink-2);
+ display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
+.wait .wsub{margin-top:6px;font-size:11.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.more{display:block;margin:12px auto 0;padding:4px 10px;border:0;border-radius:6px;background:none;
+ font:inherit;font-size:12px;font-weight:500;color:var(--muted);cursor:pointer}
+.more:hover{color:var(--ink)}
+
+.rds{display:flex;flex-direction:column;gap:16px}
+.rd{display:flex;gap:13px}.rd p{margin:0}
+.av{flex:none;display:grid;place-items:center;width:30px;height:30px;border-radius:50%;
+ background:var(--tag);color:var(--tag-ink);font-size:11px;font-weight:600}
+.rd:first-child .av{background:var(--acc-bg);color:var(--acc)}
+.rd .t{font-size:13px;line-height:1.5}
+.rd .rm{margin-top:5px;font-size:11.5px;color:var(--muted)}
+
+.ptools{display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px;margin:0 0 26px}
+.ptools .note{margin:0}
+.pgroups{display:grid;gap:30px}
+.client-h{display:flex;align-items:center;gap:8px;margin:0 0 12px}
+.client-h h2{margin:0;font-size:15px;line-height:1.2;font-weight:600}
+.client-h .sw{width:10px;height:10px;border-radius:3px}
+.client-h .cnt{margin-left:2px}
+.projs{display:grid;gap:10px}
+.proj{background:var(--surface);border:1px solid var(--line-2);border-radius:12px;overflow:hidden}
+details.proj>summary.proj-h{display:flex;align-items:center;gap:10px;padding:14px 14px 14px 16px;border-top:0;
+ list-style:none;font-size:14px;color:var(--ink);cursor:pointer}
+.proj-h::-webkit-details-marker{display:none}
+.proj-h::before{content:"";flex:none;width:7px;height:7px;margin:0 3px 0 1px;border-right:1.5px solid var(--muted);
+ border-bottom:1.5px solid var(--muted);transform:rotate(-45deg);transition:transform .15s}
+.proj[open]>.proj-h::before{transform:rotate(45deg)}
+.proj[open]>.proj-h{border-bottom:1px solid var(--line)}
+.proj-h:hover{background:var(--side)}
+.proj-h h3{margin:0;font-size:15.5px;font-weight:600}.pm{margin-left:auto;color:var(--muted);font-size:12px}
+.proj-h .st{margin-left:4px}
+.bar{display:block;width:4px;height:20px;border-radius:2px}
+.s0{background:var(--s0)}.s1{background:var(--s1)}.s2{background:var(--s2)}.s3{background:var(--s3)}
+.s4{background:var(--s4)}.s5{background:var(--s5)}.s6{background:var(--s6)}.s7{background:var(--s7)}
+.s8{background:var(--s8)}
+.sw{display:inline-block;width:8px;height:8px;border-radius:2px}
+/* 프로젝트 안쪽은 한 단계 가라앉힌 바탕, 업무 묶음은 그 위에 뜬 카드 한 장씩 */
+.proj-b{display:grid;gap:10px;padding:12px;background:var(--side)}
+.work{background:var(--surface);border:1px solid var(--line);border-radius:10px;box-shadow:0 1px 2px rgba(0,0,0,.05)}
+.work-h{display:flex;align-items:center;flex-wrap:wrap;gap:6px 8px;padding:11px 16px;border-bottom:1px solid var(--line);
+ border-radius:9px 9px 0 0;background:color-mix(in srgb,var(--tag) 60%,transparent)}
+.work-h .new{margin-left:0}.work-h .stt{margin-right:0}
+.work-h .wm{margin-left:auto;white-space:nowrap}.wm b{font-weight:600;color:var(--ink-2)}
+.wchip{display:inline-block;padding:0 7px;border:1px dashed var(--box);border-radius:4px;color:var(--muted);
+ font-size:11px;font-weight:600;line-height:18px}
+h4{margin:0 0 6px;font-size:12px;font-weight:600;color:var(--ink-2)}
+h4.wt{margin:0;font-size:14.5px;color:var(--ink)}
+h4.sec{margin:22px 0 10px;font-size:13px;color:var(--ink)}
+.wm{color:var(--muted);font-size:12px}
+.no-task{margin:0;padding:12px 16px;color:var(--muted);font-size:12px}
+.tasks{padding:2px 16px 4px}
+.tasks .task,.dec{padding:8px 0;border-bottom:1px solid var(--line)}
+.tasks .task:last-child,.dec:last-child{border-bottom:0}
+.tasks .task .t{margin:0;font-size:13.5px;line-height:1.5;color:var(--ink)}
+.tasks .task .th{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 6px}
+.tasks .task .meta{margin-left:0}
+.task .ctl{margin-left:auto}
+.task .btn{padding:3px 9px;font-size:11.5px}
+.task .st:empty{display:none}
+.gone summary{padding:8px 18px;color:var(--muted);font-size:12px;cursor:pointer}
+.gone .tasks .task .t{color:var(--muted)}
+.meta{display:flex;flex-wrap:wrap;gap:4px 10px;margin:3px 0 0 27px;color:var(--muted);font-size:12px;min-width:0}
+.dec .meta,.thr .meta{margin-left:0}
+.src{min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dl{display:inline-flex;gap:4px;align-items:center;color:var(--ink-2)}
+.dl i{font-style:normal}
+i.crit{color:var(--crit)}i.serious{color:var(--warn)}i.warn{color:var(--caution)}i.muted{color:var(--muted)}
+.rtag{display:inline-block;margin-right:6px;padding:0 6px;border-radius:4px;font-size:11px;
+ font-weight:600;line-height:18px;vertical-align:1px;white-space:nowrap;color:var(--ink);
+ background:var(--tag);border:1px solid var(--line)}
+.rtag.rt1{background:color-mix(in srgb,var(--s1) 16%,transparent);border-color:color-mix(in srgb,var(--s1) 45%,transparent)}
+.rtag.rt2{background:color-mix(in srgb,var(--s7) 16%,transparent);border-color:color-mix(in srgb,var(--s7) 45%,transparent)}
+.rtag.rt3{background:color-mix(in srgb,var(--s2) 16%,transparent);border-color:color-mix(in srgb,var(--s2) 45%,transparent)}
+.sim{display:inline-block;padding:0 6px;border-radius:4px;font-size:11px;
+ line-height:18px;white-space:nowrap;cursor:help;color:var(--warn);
+ background:var(--warn-bg);border:1px solid var(--warn-soft)}
+.who{display:inline-flex;gap:4px;align-items:baseline;color:var(--ink-2)}
+.who .none{color:var(--muted)}
+.org{font-size:11px;padding:0 5px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
+.decs .ds{margin-left:6px;color:var(--muted);font-size:12px}
+.dec-g{padding:2px 18px 8px}
+.dec-by{display:flex;align-items:baseline;gap:6px;margin:6px 0 0;font-size:13px;font-weight:600}
+.dec-by .none,.dd .none{color:var(--muted);font-weight:400}
+.dec{display:flex;gap:12px;align-items:baseline}
+.dd{flex:none;min-width:44px;color:var(--ink-2);font-size:12px}.dt{min-width:0}
+.new{display:inline-block;margin-left:6px;font-size:10px;font-weight:700;letter-spacing:.02em;
+ padding:1px 6px;border-radius:999px;background:var(--new-bg);color:var(--new-ink);vertical-align:middle}
+.tg .new,.tg .chip{margin-left:0}
+.chip{display:inline-block;margin-left:6px;font-size:11px;padding:0 6px;border-radius:999px;
+ border:1px solid var(--line);color:var(--ink-2);vertical-align:middle}
+.thr-list{display:grid}
+.thr{padding:12px 18px;border-bottom:1px solid var(--line)}.thr:last-child{border-bottom:0}
+.thr-list.box{background:var(--surface);border:1px solid var(--line-2);border-radius:12px;overflow:hidden}
+.thr-h{display:flex;align-items:center;flex-wrap:wrap}.subj{font-weight:500}
+.snip{margin:4px 0 0;color:var(--ink-2);font-size:13px}
+[data-preview].has-preview{cursor:help;text-decoration:underline dotted var(--box);text-underline-offset:4px}
+[data-preview].has-preview:focus-visible{outline:2px solid var(--acc);outline-offset:3px;border-radius:4px}
+.mail-preview{position:fixed;z-index:1000;box-sizing:border-box;width:480px;max-width:calc(100vw - 24px);
+ padding:14px 16px;background:var(--ink);color:var(--card);border:1px solid var(--ink);
+ border-top:3px solid var(--acc);border-radius:12px;box-shadow:0 10px 32px rgba(0,0,0,.18);font-size:13px;line-height:1.65}
+.mail-preview[hidden]{display:none}
+.mail-preview::after{content:"";position:absolute;left:var(--preview-arrow,24px);top:-7px;width:10px;height:10px;
+ background:var(--ink);border-top:1px solid var(--acc);border-left:1px solid var(--acc);transform:rotate(45deg)}
+.mail-preview[data-placement="above"]::after{top:auto;bottom:-6px;border-color:var(--ink);transform:rotate(225deg)}
+.mail-preview-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:8px;
+ color:color-mix(in srgb,var(--card) 75%,var(--ink));font-size:11px;font-weight:600}
+.mail-preview-head small{font-size:10px;font-weight:400}
+.mail-preview-body{max-height:min(320px,50vh);overflow:auto;overscroll-behavior:contain;white-space:pre-wrap;
+ overflow-wrap:anywhere;user-select:text}
+.pend-only .pend-note{margin:0;padding:10px 16px 8px;color:var(--muted);font-size:12px}
+/* 업무 카드 안의 원본 대화: 안쪽 상자 + 한 단계 낮춘 제목 (따로 된 업무로 보이지 않게) */
+.work .thr-list{margin:0 16px 12px;background:var(--side);border:1px solid var(--line);border-radius:8px}
+.work .thr{padding:10px 14px}
+.work .thr .subj{font-size:13px;color:var(--ink-2)}
+.work details summary{padding:9px 16px}
+.work .dec-g{padding:2px 16px 8px}
+details summary{padding:10px 18px;color:var(--ink-2);font-size:13px;cursor:pointer;border-top:1px solid var(--line)}
+.tbl-wrap{overflow-x:auto;background:var(--surface);border:1px solid var(--line-2);border-radius:12px}
+.tbl{width:100%;border-collapse:collapse;font-size:13px}
+.tbl th{text-align:left;font-weight:600;color:var(--muted);font-size:12px;padding:8px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+.tbl td{padding:8px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+.tbl tr:last-child td{border-bottom:0}
+.empty,.empty-state{color:var(--muted);font-size:13px}.empty{padding:6px 0}.empty-state{margin:0}
+
+/* 일정 탭: 마감 요약 · 기한 지남 줄 · 월간 달력(페이지 JS 가 그림) · 고른 날의 할 일 · 기한 없음 */
+.sch-top{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px 16px;margin:0 0 12px}
+.sch-sum{display:flex;flex-wrap:wrap;gap:8px}
+.ss{appearance:none;display:inline-flex;align-items:baseline;gap:8px;padding:8px 14px;border:1px solid var(--line);
+ border-radius:10px;background:var(--surface);font:inherit;font-size:12.5px;color:var(--ink-2);cursor:pointer}
+.ss b{font-size:17px;font-weight:600;line-height:1;color:var(--ink)}
+.ss.lv-overdue b{color:var(--crit)}.ss.lv-today b{color:var(--warn)}
+.ss:hover{border-color:var(--box)}
+.ss[aria-pressed="true"]{border-color:var(--acc);box-shadow:inset 0 0 0 1px var(--acc);color:var(--ink)}
+#tab-schedule .note{margin:0 0 16px}
+.sch-over{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0 0 16px;padding:8px 10px;border-radius:10px;
+ border:1px solid color-mix(in srgb,var(--crit) 30%,transparent);background:color-mix(in srgb,var(--crit) 6%,var(--surface))}
+.so-l{margin:0 4px 0 2px;font-size:12px;font-weight:600;color:var(--crit)}
+.so-chips{display:contents}
+.sch-body{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(290px,1fr);gap:24px;align-items:start}
+.cal{min-width:0}
+.cal-h{display:flex;align-items:center;gap:6px;margin:0 0 10px}
+.cal-h h2{min-width:112px;margin:0 4px;font-size:16px;font-weight:600;text-align:center}
+.cal-nav{appearance:none;display:grid;place-items:center;width:30px;height:30px;padding:0;border:1px solid var(--line);
+ border-radius:8px;background:var(--surface);font:inherit;font-size:17px;line-height:1;color:var(--ink-2);cursor:pointer}
+.cal-nav:hover{border-color:var(--box);color:var(--ink)}
+.cal-h .btn{margin-left:auto}
+.cal-wk,.cal-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr))}
+.cal-wk{margin:0 0 6px;font-size:11.5px;font-weight:500;color:var(--muted);text-align:center}
+.cal-wk span:last-child{color:var(--crit)}
+.cal-grid{gap:1px;overflow:hidden;background:var(--line);border:1px solid var(--line-2);border-radius:12px}
+.cd{display:flex;flex-direction:column;gap:3px;min-width:0;min-height:98px;padding:4px 4px 6px;background:var(--surface);cursor:pointer}
+.cd:hover{background:color-mix(in srgb,var(--tag) 45%,var(--surface))}
+.cd.we,.cd.hol{background:var(--side)}
+.cd.out>*{opacity:.45}
+.cd.sel{box-shadow:inset 0 0 0 2px var(--acc)}
+.cd-top{display:flex;align-items:center;gap:4px;min-width:0}
+.cd-d{appearance:none;flex:none;display:grid;place-items:center;min-width:24px;height:24px;padding:0 6px;border:0;
+ border-radius:999px;background:none;font:inherit;font-size:12px;font-weight:500;color:var(--ink-2);cursor:pointer}
+.cd.sun .cd-d,.cd.hol .cd-d{color:var(--crit)}
+.cd.now .cd-d{background:var(--acc);color:var(--acc-ink);font-weight:700}
+.cd-h{min-width:0;overflow:hidden;font-size:10.5px;color:var(--crit);text-overflow:ellipsis;white-space:nowrap}
+.cc{display:flex;align-items:center;gap:4px;min-width:0;padding:2px 5px 2px 4px;border:0;border-left:3px solid var(--box);
+ border-radius:4px;background:var(--tag);font:inherit;font-size:11px;line-height:1.35;color:var(--ink);text-align:left}
+.cc .cx{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cc .sw{flex:none;width:6px;height:6px}
+.cc.lv-overdue{border-left-color:var(--crit)}.cc.lv-today{border-left-color:var(--warn)}
+.cc.lv-soon{border-left-color:var(--caution)}
+.cc.pt{background:none;box-shadow:inset 0 0 0 1px var(--line);color:var(--ink-2)}
+.cc.lv-done{border-left-color:var(--line);color:var(--muted)}.cc.lv-done .cx{text-decoration:line-through}
+button.cc{max-width:260px;cursor:pointer}
+button.cc:hover{background:color-mix(in srgb,var(--crit) 12%,var(--surface))}
+.cd-more{appearance:none;align-self:flex-start;padding:0 4px;border:0;border-radius:4px;background:none;font:inherit;
+ font-size:11px;font-weight:500;color:var(--muted);cursor:pointer}
+.cd-more:hover{color:var(--ink)}
+.cd-dots{display:none}
+.sch-side{min-width:0;padding:18px 18px 20px;background:var(--side);border:1px solid var(--line-2);border-radius:12px}
+.sch-side .sec-h{margin:0 0 12px}.sch-side .sec-h.gap{margin-top:28px}
+.sch-side .sec-h h2{font-size:15px}
+.sits{display:flex;flex-direction:column;gap:10px}
+.sit{padding:12px 14px;background:var(--surface);border:1px solid var(--line-2);border-left:3px solid var(--line);border-radius:10px}
+.sit[data-state="open"][data-level="overdue"]{border-left-color:var(--crit)}
+.sit[data-state="open"][data-level="today"]{border-left-color:var(--warn)}
+.sit[data-state="open"][data-level="soon"]{border-left-color:var(--caution)}
+.sit[data-kind="task"]{border-top-style:dashed;border-right-style:dashed;border-bottom-style:dashed}
+.sit p{margin:0}
+.sit .tg{margin-bottom:6px}
+.sit .t{font-size:13.5px;font-weight:600;line-height:1.45}
+.sit.done .t{text-decoration:line-through;color:var(--muted)}
+.sit.flash{animation:sit-flash 1.6s ease-out}
+@keyframes sit-flash{from{box-shadow:0 0 0 3px color-mix(in srgb,var(--acc) 55%,transparent)}to{box-shadow:0 0 0 3px transparent}}
+.sdue{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;margin-top:10px;font-size:12px;color:var(--muted)}
+.due-l{display:inline-flex;align-items:center;gap:6px}
+.due-in{padding:3px 6px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink);
+ font:inherit;font-size:12px}
+.due-in:disabled{opacity:.5}
+.sit:not([data-manual="1"]) .due-rev,.sit:not([data-manual="1"]) .due-src,.sit:not([data-state="open"]) .sdue{display:none}
+.sit .tf{margin-top:10px}
+.sit .tip{max-width:min(260px,calc(100vw - 56px))}   /* 좁은 목록 칸에서 카드 밖으로 잘리지 않게 */
+@media (prefers-reduced-motion:reduce){.sit.flash{animation:none;outline:2px solid var(--acc)}}
+
+/* 맨 아래 2depth: 1depth 줄(메일 분류 규칙 · 토큰 사용 현황)을 누르면 2depth 보기가 펼쳐진다 */
+.info{margin-top:20px;background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);overflow:hidden}
+.info-row+.info-row{border-top:1px solid var(--line)}
+.info-h{appearance:none;display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 14px;width:100%;margin:0;
+ padding:18px 28px 18px 22px;border:0;background:none;font:inherit;color:var(--ink);text-align:left;cursor:pointer}
+.info-h:hover{background:var(--side)}
+.info-h::before{content:"";flex:none;align-self:center;width:7px;height:7px;margin:0 2px 0 1px;border-right:1.5px solid var(--muted);
+ border-bottom:1.5px solid var(--muted);transform:rotate(-45deg);transition:transform .15s}
+.info-h[aria-expanded="true"]::before{transform:rotate(45deg)}
+.info-t{font-size:15px;font-weight:600}
+.info-s{flex:1 1 320px;min-width:0;font-size:12.5px;color:var(--muted)}
+.info-b{padding:4px 28px 28px 42px}
+.info-b>.seg{margin:0 0 20px}
+.info-p{min-width:0}
+.ih{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;margin:24px 0 10px;font-size:13px;font-weight:600;color:var(--ink)}
+.info-p>.ih:first-child{margin-top:0}
+.ih-m{font-size:12px;font-weight:400;color:var(--muted)}
+.ib{display:grid;grid-template-columns:minmax(0,210px) minmax(60px,1fr) 150px;gap:14px;align-items:center;padding:6px 0;font-size:13px}
+.ib-l{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink)}
+.ib-l .itag{margin-left:6px;vertical-align:1px}
+.ib-o{display:inline-grid;place-items:center;min-width:18px;height:18px;margin-right:8px;border-radius:50%;
+ background:var(--tag);color:var(--tag-ink);font-size:11px;font-weight:600;vertical-align:1px}
+.ib-n{min-width:72px;text-align:right;font-size:12.5px;font-weight:500;color:var(--ink-2);white-space:nowrap}
+.info .fill,.usage-body .fill{transition:none}.fill.mute{background:var(--box)}
+details.ib-d>summary.ib{padding:6px 0;border-top:0;list-style:none;font-size:13px;color:var(--ink);cursor:pointer}
+details.ib-d>summary::-webkit-details-marker{display:none}
+details.ib-d>summary:hover .ib-l{text-decoration:underline dotted var(--box);text-underline-offset:3px}
+.ib-list{margin:2px 0 10px 26px;padding:8px 12px;border:1px solid var(--line);border-radius:8px;background:var(--side);font-size:12.5px}
+.ib-list li{display:flex;justify-content:space-between;gap:12px;padding:3px 0;color:var(--muted)}
+.ib-list .ib-s{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink-2)}
+.ib-list .ib-p{flex:none}
+.ib-g+.ib-g{border-top:1px dashed var(--line)}
+.ib-note{margin:-2px 0 8px 26px;font-size:12px;color:var(--muted)}
+.iflow{display:grid;gap:10px;margin:0;padding:0;list-style:none}
+.if{padding:12px 16px 13px;background:var(--surface);border:1px solid var(--line-2);border-radius:10px}
+.if-h{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;font-size:13.5px}
+.if-n{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:50%;background:var(--acc-bg);
+ color:var(--acc);font-size:11px;font-weight:700}
+.if-c{margin-left:auto;font-size:12px;color:var(--ink-2)}
+.if-d{margin:6px 0 0 30px;font-size:12.5px;line-height:1.55;color:var(--ink-2)}
+.if-w{margin:4px 0 0 30px;font-size:11.5px;color:var(--muted)}
+.itag{display:inline-block;padding:0 7px;border-radius:4px;background:var(--tag);color:var(--tag-ink);font-size:11px;
+ font-weight:600;line-height:18px;white-space:nowrap}
+.itag.llm{background:var(--acc-bg);color:var(--acc)}
+.itag.bad{background:color-mix(in srgb,var(--crit) 12%,transparent);color:var(--crit)}
+.ichips{display:flex;flex-wrap:wrap;gap:6px}.ichips.gap{margin-top:8px}
+.ichips .chip{margin-left:0;padding:1px 9px;font-size:12px}
+.il{margin:0;padding:0;list-style:none;border:1px solid var(--line-2);border-radius:10px;background:var(--surface)}
+.il>li{display:grid;grid-template-columns:minmax(0,170px) minmax(0,1fr) auto;gap:4px 16px;align-items:baseline;
+ padding:10px 14px;border-bottom:1px solid var(--line);font-size:13px}
+.il>li:last-child{border-bottom:0}
+.il b{font-weight:600;color:var(--ink)}
+.il .d{color:var(--ink-2);line-height:1.55}
+.il .v{font-size:12px;color:var(--muted);white-space:nowrap}
+.itiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line-2);
+ border-radius:10px;overflow:hidden}
+.itile{padding:14px 18px;background:var(--surface)}
+.itile p{margin:0}
+.it-l{font-size:12px;color:var(--muted)}
+.it-v{margin-top:6px;font-size:24px;line-height:1.1;font-weight:600}
+.it-u{margin-left:5px;font-size:12px;font-weight:500;color:var(--muted)}
+.it-g{margin-top:7px}
+.it-c{margin-top:6px;font-size:11.5px;color:var(--muted)}
+/* 증가량: 늘면 주의색(주황), 줄면 강조색(초록) — 토큰은 적게 쓸수록 좋다 */
+.it-d{display:inline-block;padding:1px 7px;border-radius:5px;font-size:11.5px;font-weight:600;
+ font-variant-numeric:tabular-nums;white-space:nowrap}
+.it-d.up{background:var(--warn-bg);color:var(--warn)}
+.it-d.down{background:var(--acc-bg);color:var(--acc)}
+.it-d.flat,.it-d.new{background:var(--tag);color:var(--tag-ink);font-weight:500}
+.it-w{font-weight:400;opacity:.8}
+.ib-n .it-d{margin-left:6px;padding:0 5px;font-size:11px}
+.inote{margin:12px 0 0;font-size:12.5px;line-height:1.55;color:var(--muted)}
+.ifoot{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;margin:14px 0 0;font-size:12.5px;color:var(--muted)}
+a.btn{display:inline-block;text-decoration:none}
+.info .tbl th.num,.info .tbl td.num,.usage-body .tbl th.num,.usage-body .tbl td.num{text-align:right;white-space:nowrap}
+.info .tbl td,.usage-body .tbl td{vertical-align:middle}
+.info .tbl .subj-c,.usage-body .tbl .subj-c{max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.info .tbl .nw,.usage-body .tbl .nw{white-space:nowrap}
+/* 칸이 많은 표(호출 기록 · 무거운 대화)는 좁은 화면에서 글자를 세로로 쪼개지 말고 옆으로 밀어서 본다 */
+.usage-body .tbl{min-width:660px}
+
+@media (max-width:900px){
+ .digest-overview{grid-template-columns:minmax(0,1fr);gap:24px}
+ .kpis{gap:24px}
+ .today{grid-template-columns:minmax(0,1fr)}
+ .sch-body{grid-template-columns:minmax(0,1fr)}
+ .col-main{border-right:0;border-bottom:1px solid var(--line)}
+ .hero-side{align-items:flex-start}
+ .itiles{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .usage-body{padding:4px 24px 30px}
+}
+@media (max-width:600px){
+ .wrap{padding:16px 16px 48px}
+ .hero{padding:24px 20px 18px}
+ h1{font-size:23px}
+ .card>.banner{margin:0 20px 16px}
+ .digest-overview{padding:0 20px 24px}
+ .kpi .v b{font-size:40px}
+ .deadline-counts{gap:2px 10px}
+ .view-toolbar{flex-wrap:wrap;gap:0;padding-right:0}
+ .view-toolbar .tabs{flex-basis:100%}
+ .view-toolbar .switch{margin:8px 20px 12px 0;margin-left:auto}
+ .card>.banner:first-child{padding:8px 20px}
+ .tabs{padding:0 12px}
+ .col-main,.col-side,.pad{padding:24px 18px 30px}
+ .act{padding:16px}
+ .ctx{grid-template-columns:minmax(0,1fr);gap:0}
+ .ctx dd{margin-bottom:8px}.ctx>div:last-child dd{margin-bottom:0}
+ .proj-b{gap:8px;padding:8px}
+ .work-h .wm{margin-left:0;white-space:normal}
+ #tab-today .sec-h:first-child{flex-wrap:wrap}
+ .pgo{grid-template-columns:minmax(0,1fr) auto;gap:8px 12px;padding:14px 4px 14px 16px}
+ .pgo .track{grid-column:1/-1;grid-row:2}
+ .prow>.kb{padding-right:10px}
+ details.proj>summary.proj-h{flex-wrap:wrap;row-gap:4px}
+ .proj-h h3{flex:1 1 0;min-width:0}
+ .pm{order:5;margin-left:22px;width:100%}
+ .ss{flex:1 1 40%;justify-content:space-between}
+ .cd{min-height:52px;padding:3px 2px 5px;align-items:center}
+ .cd .cc,.cd .cd-more,.cd-h{display:none}
+ .cd-dots{display:flex;gap:2px}
+ .cd-dots i{width:5px;height:5px;border-radius:50%;background:var(--box)}
+ .cd-dots i.lv-overdue{background:var(--crit)}.cd-dots i.lv-today{background:var(--warn)}
+ .cd-dots i.lv-soon{background:var(--caution)}
+ .sch-side{padding:14px 12px 16px}
+ .info-h{padding:16px 16px 16px 14px}
+ .info-b{padding:4px 16px 22px}
+ .usage-body{padding:4px 16px 26px}
+ .usage-page .hero{padding:20px 20px 16px}
+ .ib{grid-template-columns:minmax(0,1fr) auto;gap:4px 10px}
+ .ib .track{grid-column:1/-1;grid-row:2}
+ .il>li{grid-template-columns:minmax(0,1fr) auto}
+ .il .d{grid-column:1/-1;grid-row:2}
+ .itiles{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .it-w{display:none}
+ .if-d,.if-w,.ib-note,.ib-list{margin-left:0}
+}
+</style></head><body class="usage-page"><main class="wrap"><div class="card"><header class="hero"><div class="hero-t"><a class="back" href="./"><span class="back-a" aria-hidden="true"></span>메일 업무 대시보드</a><h1>토큰 사용 현황</h1><p class="sub">오늘 호출 1회 · 20.6K 토큰 — 최근 7일 294K 토큰 · 지난 7일보다 ▼ 37.8K (-11%) · API 환산 $1.22 · 한도 초과 1회</p></div><div class="hero-acts"><button type="button" id="theme" class="pill" aria-label="테마 전환">테마: 시스템</button></div></header><div class="banner" role="note">데모 화면입니다 — 회사 · 사람 · 메일은 모두 가상이며 실제 메일은 들어 있지 않습니다.</div><div class="usage-body" data-usage><div class="seg" role="group" aria-label="토큰 사용 현황 보기"><button type="button" data-sub="sum" aria-pressed="true">요약</button><button type="button" data-sub="where" aria-pressed="false">어디에 쓰나</button><button type="button" data-sub="log" aria-pressed="false">호출 기록</button></div><div class="info-p" data-pane="sum"><div class="itiles"><div class="itile"><p class="it-l">오늘</p><p class="it-v num">20.6K<span class="it-u">토큰</span></p><p class="it-g"><span class="it-d down" title="어제 82.7K 토큰">▼ 62.1K · -75%<span class="it-w"> 어제보다</span></span></p><p class="it-c">호출 1회 · API 환산 $0.09</p></div><div class="itile"><p class="it-l">최근 7일</p><p class="it-v num">294K<span class="it-u">토큰</span></p><p class="it-g"><span class="it-d down" title="지난 7일 331.8K 토큰">▼ 37.8K · -11%<span class="it-w"> 지난 7일보다</span></span></p><p class="it-c">호출 15회 · API 환산 $1.22 · 실패 1회</p></div><div class="itile"><p class="it-l">이번 달 (9월)</p><p class="it-v num">877.2K<span class="it-u">토큰</span></p><p class="it-g"><span class="it-d up" title="지난달 502.8K 토큰">▲ 374.4K · +74%<span class="it-w"> 지난달보다</span></span></p><p class="it-c">호출 43회 · API 환산 $3.78 · 실패 1회</p></div><div class="itile"><p class="it-l">누적</p><p class="it-v num">1.38M<span class="it-u">토큰</span></p><p class="it-g"><span class="it-d flat">하루 평균 46K · 30일째</span></p><p class="it-c">호출 67회 · API 환산 $6.01</p></div></div><h4 class="ih">일별<span class="ih-m">최근 7일 · 토큰 · 호출 수</span></h4><div class="ib-set"><div class="ib"><span class="ib-l">09/12 토</span><span class="track" aria-hidden="true"><span class="fill" style="width:0%"></span></span><span class="ib-n num">0 · 0회 </span></div><div class="ib"><span class="ib-l">09/13 일</span><span class="track" aria-hidden="true"><span class="fill" style="width:0%"></span></span><span class="ib-n num">0 · 0회 </span></div><div class="ib"><span class="ib-l">09/14 월</span><span class="track" aria-hidden="true"><span class="fill" style="width:74%"></span></span><span class="ib-n num">61.3K · 3회 <span class="it-d up">▲ 61.3K</span></span></div><div class="ib"><span class="ib-l">09/15 화</span><span class="track" aria-hidden="true"><span class="fill" style="width:77%"></span></span><span class="ib-n num">63.9K · 3회 <span class="it-d up">▲ 2.6K</span></span></div><div class="ib"><span class="ib-l">09/16 수 <span class="itag bad">한도 초과</span></span><span class="track" aria-hidden="true"><span class="fill" style="width:79%"></span></span><span class="ib-n num">65.5K · 4회 <span class="it-d up">▲ 1.5K</span></span></div><div class="ib"><span class="ib-l">09/17 목</span><span class="track" aria-hidden="true"><span class="fill" style="width:100%"></span></span><span class="ib-n num">82.7K · 4회 <span class="it-d up">▲ 17.2K</span></span></div><div class="ib"><span class="ib-l">09/18 금</span><span class="track" aria-hidden="true"><span class="fill" style="width:25%"></span></span><span class="ib-n num">20.6K · 1회 <span class="it-d down">▼ 62.1K</span></span></div></div><h4 class="ih">회차별<span class="ih-m">최근 7일 합계 · 자동 정리 09 · 13 · 17시와 직접 실행</span></h4><div class="ib-set"><div class="ib"><span class="ib-l">09시</span><span class="track" aria-hidden="true"><span class="fill" style="width:100%"></span></span><span class="ib-n num">103K · 5회</span></div><div class="ib"><span class="ib-l">13시</span><span class="track" aria-hidden="true"><span class="fill" style="width:81%"></span></span><span class="ib-n num">83.2K · 4회</span></div><div class="ib"><span class="ib-l">17시</span><span class="track" aria-hidden="true"><span class="fill" style="width:60%"></span></span><span class="ib-n num">62.3K · 4회</span></div><div class="ib"><span class="ib-l">직접 실행</span><span class="track" aria-hidden="true"><span class="fill mute" style="width:44%"></span></span><span class="ib-n num">45.5K · 2회</span></div></div><h4 class="ih">최근 7일</h4><ul class="il"><li><b>한도 초과로 실패</b><span class="d">최근 09/16 17:06 · 13:30에 풀림 · 실패한 대화는 다음 정리 때 다시 보냄</span><span class="v num">1회</span></li><li><b>다시 묻지 않은 대화</b><span class="d">내용이 그대로라 호출 없이 이전 결과를 씀 · 새로 정리 25개 · 실패 3개 · 정리 16번에 호출 14번</span><span class="v num">308개</span></li><li><b>마지막 정리</b><span class="d">09/18 09:01 · 대화 21개 중 재사용 19 · 새로 2 · 실패 0</span><span class="v num">호출 1번</span></li><li><b>토큰 구성</b><span class="d">입력 11.3K · 캐시 쓰기 246.7K · 캐시 읽기 18.6K · 출력 17.3K</span><span class="v num"></span></li><li><b>모델</b><span class="d">claude-opus-5</span><span class="v num"></span></li></ul><p class="inote">기록 시작 08/20 09:03 · 금액은 구독 사용량을 API 요금으로 바꿔 본 참고값이고 실제 청구는 없습니다. 출력 · 캐시 쓰기는 비싸고 캐시 읽기는 쌉니다.</p></div><div class="info-p" data-pane="where" hidden><h4 class="ih">용도별<span class="ih-m">최근 7일 · 토큰을 쓰는 곳은 이 넷뿐</span></h4><div class="ib-set"><div class="ib"><span class="ib-l">업무 정리 · 자동</span><span class="track" aria-hidden="true"><span class="fill" style="width:100%"></span></span><span class="ib-n num">248.4K · 13회 · 85%</span></div><div class="ib"><span class="ib-l">업무 정리 · 직접 실행</span><span class="track" aria-hidden="true"><span class="fill" style="width:8%"></span></span><span class="ib-n num">20.6K · 1회 · 7%</span></div><div class="ib"><span class="ib-l">메일 요약 (run.py)</span><span class="track" aria-hidden="true"><span class="fill" style="width:10%"></span></span><span class="ib-n num">24.9K · 1회 · 8%</span></div><div class="ib"><span class="ib-l">토큰 확인 (set_token.py)</span><span class="track" aria-hidden="true"><span class="fill" style="width:0%"></span></span><span class="ib-n num">0 · 0회 · 0%</span></div></div><h4 class="ih">대시보드 칸별</h4><ul class="il"><li><b>토큰으로 채우는 칸</b><span class="d">내 할 일 · 프로젝트 할 일 · 결정사항 · 대화 요약 · 메일에서 뽑은 기한 · LLM 이 고른 세부 프로젝트</span><span class="v num"></span></li><li><b>토큰 없이 만드는 칸</b><span class="d">메일 받기 · 차단 · 대화 묶기 · 키워드 · 태그 · 도메인 분류 · 답을 기다리는 메일 · 일정 달력 · 진행 막대</span><span class="v num"></span></li><li><b>호출마다 붙는 기본 지시문</b><span class="d">약 19.2K 토큰 — 09/11 10:12 짧은 확인 호출(&quot;OK&quot;)로 잰 값. 메일 내용과 별개로 Claude Code 가 호출할 때마다 넣는 지시문이라, 대화를 묶어 호출 수를 줄일수록 덜 씁니다</span><span class="v num">19.2K</span></li></ul><h4 class="ih">프로젝트별<span class="ih-m">최근 7일 · 추정 (한 호출에 대화 여러 개를 묶어 보내서 글자 수 비율로 나눔)</span></h4><div class="ib-set"><div class="ib"><span class="ib-l">오로라 운영(기타)</span><span class="track" aria-hidden="true"><span class="fill" style="width:100%"></span></span><span class="ib-n num">62.7K</span></div><div class="ib"><span class="ib-l">미분류</span><span class="track" aria-hidden="true"><span class="fill mute" style="width:88%"></span></span><span class="ib-n num">54.9K</span></div><div class="ib"><span class="ib-l">AX9 멤버십 테니스클럽</span><span class="track" aria-hidden="true"><span class="fill" style="width:55%"></span></span><span class="ib-n num">34.6K</span></div><div class="ib"><span class="ib-l">오로라 클래식</span><span class="track" aria-hidden="true"><span class="fill" style="width:55%"></span></span><span class="ib-n num">34.5K</span></div><div class="ib"><span class="ib-l">잡스테이션</span><span class="track" aria-hidden="true"><span class="fill" style="width:52%"></span></span><span class="ib-n num">32.9K</span></div><div class="ib"><span class="ib-l">하늘투어</span><span class="track" aria-hidden="true"><span class="fill" style="width:30%"></span></span><span class="ib-n num">18.6K</span></div><div class="ib"><span class="ib-l">오로라 스토어</span><span class="track" aria-hidden="true"><span class="fill" style="width:28%"></span></span><span class="ib-n num">17.3K</span></div><div class="ib"><span class="ib-l">오로라 갤러리</span><span class="track" aria-hidden="true"><span class="fill" style="width:22%"></span></span><span class="ib-n num">14K</span></div><div class="ib"><span class="ib-l">오로라 한결카드 PLCC</span><span class="track" aria-hidden="true"><span class="fill" style="width:15%"></span></span><span class="ib-n num">9.7K</span></div><div class="ib"><span class="ib-l">오로라 포럼</span><span class="track" aria-hidden="true"><span class="fill" style="width:13%"></span></span><span class="ib-n num">8.1K</span></div><div class="ib"><span class="ib-l">&#x27;26 전사 워크숍</span><span class="track" aria-hidden="true"><span class="fill" style="width:10%"></span></span><span class="ib-n num">6.6K</span></div></div><h4 class="ih">무거운 대화 5개<span class="ih-m">추정 토큰 순 · 새 메일이 한 통만 와도 대화 전체를 다시 보냄 · 정기 메일이면 projects.json 의 extract_skip 에 넣으면 빠짐</span></h4><div class="tbl-wrap"><table class="tbl"><thead><tr><th>대화</th><th>프로젝트</th><th class="num">메일</th><th class="num">지금 크기</th><th class="num">7일 동안 보낸 횟수</th><th class="num">추정 토큰</th></tr></thead><tbody><tr><td class="subj-c" title="주간 회의록 공유">주간 회의록 공유</td><td>미분류</td><td class="num">1통</td><td class="num">371자</td><td class="num">2번</td><td class="num">40.2K</td></tr><tr><td class="subj-c" title="RE: [문의] 오로라 클래식 VIP 티켓 발송 일정">RE: [문의] 오로라 클래식 VIP 티켓 발송 일정</td><td>오로라 클래식</td><td class="num">3통</td><td class="num">895자</td><td class="num">2번</td><td class="num">34.5K</td></tr><tr><td class="subj-c" title="썬더 레이싱 시네마 워치파티 이벤트 페이지 수정 요청">썬더 레이싱 시네마 워치파티 이벤트 페이지 수정 요청</td><td>오로라 운영(기타)</td><td class="num">1통</td><td class="num">461자</td><td class="num">2번</td><td class="num">28.9K</td></tr><tr><td class="subj-c" title="[잡스테이션] 채용 트렌드 리포트가 도착했습니다">[잡스테이션] 채용 트렌드 리포트가 도착했습니다</td><td>잡스테이션</td><td class="num">1통</td><td class="num">411자</td><td class="num">2번</td><td class="num">26.7K</td></tr><tr><td class="subj-c" title="RE: [누리마케팅] AX9 멤버십 테니스클럽 레슨 신청 페이지 오픈 요청의 건">RE: [누리마케팅] AX9 멤버십 테니스클럽 레슨 신청 페이지 오픈 요청의 건</td><td>AX9 멤버십 테니스클럽</td><td class="num">3통</td><td class="num">1,006자</td><td class="num">2번</td><td class="num">22.8K</td></tr></tbody></table></div></div><div class="info-p" data-pane="log" hidden><div class="tbl-wrap"><table class="tbl"><thead><tr><th>시각</th><th>실행</th><th>용도</th><th class="num">대화 · 메일</th><th class="num">입력</th><th class="num">출력</th><th class="num">걸린 시간</th><th class="num">API 환산</th><th>결과</th></tr></thead><tbody><tr><td class="nw"><span class="num">09/18 09:01</span></td><td class="nw">자동 09시</td><td title="claude-opus-5">업무 정리</td><td class="num">2 · 4통</td><td class="num" title="입력 549 · 캐시 쓰기 18,701 · 캐시 읽기 0">19.2K</td><td class="num">1.3K</td><td class="num">42초</td><td class="num">$0.09</td><td><span class="ih-m">성공</span></td></tr><tr><td class="nw"><span class="num">09/17 20:12</span></td><td class="nw">직접</td><td title="claude-opus-5">업무 정리</td><td class="num">2 · 4통</td><td class="num" title="입력 574 · 캐시 쓰기 18,707 · 캐시 읽기 0">19.3K</td><td class="num">1.3K</td><td class="num">38초</td><td class="num">$0.09</td><td><span class="ih-m">성공</span></td></tr><tr><td class="nw"><span class="num">09/17 17:02</span></td><td class="nw">자동 17시</td><td title="claude-opus-5">업무 정리</td><td class="num">1 · 1통</td><td class="num" title="입력 407 · 캐시 쓰기 18,664 · 캐시 읽기 0">19.1K</td><td class="num">960</td><td class="num">30초</td><td class="num">$0.09</td><td><span class="ih-m">성공</span></td></tr><tr><td class="nw"><span class="num">09/17 13:07</span></td><td class="nw">자동 13시</td><td title="claude-opus-5">업무 정리</td><td class="num">3 · 6통</td><td class="num" title="입력 682 · 캐시 쓰기 18,735 · 캐시 읽기 0">19.4K</td><td class="num">1.7K</td><td class="num">55초</td><td class="num">$0.10</td><td><span class="ih-m">성공</span></td></tr><tr><td class="nw"><span class="num">09/17 09:06</span></td><td class="nw">자동 09시</td><td title="claude-opus-5">업무 정리</td><td class="num">3 · 3통</td><td class="num" title="입력 559 · 캐시 쓰기 18,703 · 캐시 읽기 0">19.3K</td><td class="num">1.7K</td><td class="num">50초</td><td class="num">$0.10</td><td><span class="ih-m">성공</span></td></tr><tr><td class="nw"><span class="num">09/16 17:06</span></td><td class="nw">자동 17시</td><td title="">업무 정리</td><td class="num">3 · 5통</td><td class="num" title="입력 0 · 캐시 쓰기 0 · 캐시 읽기 0">—</td><td class="num">—</td><td class="num">0초</td><td class="num">$0</td><td><span class="itag bad" title="Claude usage limit reached · resets 1:30pm (Asia/Seoul)">한도 초과 · 13:30 풀림</span></td></tr><tr><td class="nw"><span class="num">09/16 14:12</span></td><td class="nw">직접</td><td title="claude-opus-5">메일 요약</td><td class="num">1 · 1통</td><td class="num" title="입력 2,600 · 캐시 쓰기 3,200 · 캐시 읽기 18,650">24.4K</td><td class="num">480</td><td class="num">12초</td><td class="num">$0.03</td><td><span class="ih-m">성공</span></td></tr><tr><td class="nw"><span class="num">09/16 13:01</span></td><td class="nw">자동 13시</td><td title="claude-opus-5">업무 정리</td><td class="num">2 · 2통</td><td class="num" title="입력 486 · 캐시 쓰기 18,685 · 캐시 읽기 0">19.2K</td><td class="num">1.3K</td><td class="num">41초</td><td class="num">$0.09</td><td><span class="ih-m">성공</span></td></tr><tr><td class="nw"><span class="num">09/16 09:02</span></td><td class="nw">자동 09시</td><td title="claude-opus-5">업무 정리</td><td class="num">1 · 1통</td><td class="num" title="입력 424 · 캐시 쓰기 18,669 · 캐시 읽기 0">19.1K</td><td class="num">960</td><td class="num">32초</td><td class="num">$0.09</td><td><span class="ih-m">성공</span></td></tr><tr><td class="nw"><span class="num">09/15 17:06</span></td><td class="nw">자동 17시</td><td title="claude-opus-5">업무 정리</td><td class="num">3 · 7통</td><td class="num" title="입력 1,458 · 캐시 쓰기 18,933 · 캐시 읽기 0">20.4K</td><td class="num">1.7K</td><td class="num">54초</td><td class="num">$0.10</td><td><span class="ih-m">성공</span></td></tr><tr><td class="nw"><span class="num">09/15 13:07</span></td><td class="nw">자동 13시</td><td title="claude-opus-5">업무 정리</td><td class="num">3 · 3통</td><td class="num" title="입력 936 · 캐시 쓰기 18,800 · 캐시 읽기 0">19.7K</td><td class="num">1.7K</td><td class="num">47초</td><td class="num">$0.10</td><td><span class="ih-m">성공</span></td></tr><tr><td class="nw"><span class="num">09/15 09:07</span></td><td class="nw">자동 09시</td><td title="claude-opus-5">업무 정리</td><td class="num">1 · 3통</td><td class="num" title="입력 739 · 캐시 쓰기 18,749 · 캐시 읽기 0">19.5K</td><td class="num">960</td><td class="num">33초</td><td class="num">$0.09</td><td><span class="ih-m">성공</span></td></tr><tr><td class="nw"><span class="num">09/14 17:05</span></td><td class="nw">자동 17시</td><td title="claude-opus-5">업무 정리</td><td class="num">1 · 1통</td><td class="num" title="입력 529 · 캐시 쓰기 18,696 · 캐시 읽기 0">19.2K</td><td class="num">960</td><td class="num">29초</td><td class="num">$0.09</td><td><span class="ih-m">성공</span></td></tr><tr><td class="nw"><span class="num">09/14 13:04</span></td><td class="nw">자동 13시</td><td title="claude-opus-5">업무 정리</td><td class="num">1 · 1통</td><td class="num" title="입력 511 · 캐시 쓰기 18,691 · 캐시 읽기 0">19.2K</td><td class="num">960</td><td class="num">35초</td><td class="num">$0.09</td><td><span class="ih-m">성공</span></td></tr><tr><td class="nw"><span class="num">09/14 09:01</span></td><td class="nw">자동 09시</td><td title="claude-opus-5">업무 정리</td><td class="num">2 · 3통</td><td class="num" title="입력 861 · 캐시 쓰기 18,781 · 캐시 읽기 0">19.6K</td><td class="num">1.3K</td><td class="num">47초</td><td class="num">$0.09</td><td><span class="ih-m">성공</span></td></tr><tr><td class="nw"><span class="num">09/11 17:06</span></td><td class="nw">자동 17시</td><td title="claude-opus-5">업무 정리</td><td class="num">2 · 4통</td><td class="num" title="입력 963 · 캐시 쓰기 18,807 · 캐시 읽기 0">19.8K</td><td class="num">1.3K</td><td class="num">43초</td><td class="num">$0.09</td><td><span class="ih-m">성공</span></td></tr><tr><td class="nw"><span class="num">09/11 13:03</span></td><td class="nw">자동 13시</td><td title="claude-opus-5">업무 정리</td><td class="num">2 · 2통</td><td class="num" title="입력 770 · 캐시 쓰기 18,757 · 캐시 읽기 0">19.5K</td><td class="num">1.3K</td><td class="num">49초</td><td class="num">$0.09</td><td><span class="ih-m">성공</span></td></tr><tr><td class="nw"><span class="num">09/11 10:12</span></td><td class="nw">직접</td><td title="claude-haiku-4-5">토큰 확인</td><td class="num">—</td><td class="num" title="입력 537 · 캐시 쓰기 18,650 · 캐시 읽기 0">19.2K</td><td class="num">73</td><td class="num">5초</td><td class="num">$0.07</td><td><span class="ih-m">성공</span></td></tr><tr><td class="nw"><span class="num">09/11 09:07</span></td><td class="nw">자동 09시</td><td title="claude-opus-5">업무 정리</td><td class="num">1 · 1통</td><td class="num" title="입력 560 · 캐시 쓰기 18,704 · 캐시 읽기 0">19.3K</td><td class="num">960</td><td class="num">31초</td><td class="num">$0.09</td><td><span class="ih-m">성공</span></td></tr><tr><td class="nw"><span class="num">09/10 17:03</span></td><td class="nw">자동 17시</td><td title="claude-opus-5">업무 정리</td><td class="num">2 · 4통</td><td class="num" title="입력 992 · 캐시 쓰기 18,814 · 캐시 읽기 0">19.8K</td><td class="num">1.3K</td><td class="num">43초</td><td class="num">$0.09</td><td><span class="ih-m">성공</span></td></tr><tr><td class="nw"><span class="num">09/10 13:06</span></td><td class="nw">자동 13시</td><td title="claude-opus-5">업무 정리</td><td class="num">3 · 3통</td><td class="num" title="입력 948 · 캐시 쓰기 18,803 · 캐시 읽기 0">19.8K</td><td class="num">1.7K</td><td class="num">52초</td><td class="num">$0.10</td><td><span class="ih-m">성공</span></td></tr><tr><td class="nw"><span class="num">09/10 09:06</span></td><td class="nw">자동 09시</td><td title="claude-opus-5">업무 정리</td><td class="num">3 · 7통</td><td class="num" title="입력 1,458 · 캐시 쓰기 18,933 · 캐시 읽기 0">20.4K</td><td class="num">1.7K</td><td class="num">49초</td><td class="num">$0.10</td><td><span class="ih-m">성공</span></td></tr><tr><td class="nw"><span class="num">09/09 17:07</span></td><td class="nw">자동 17시</td><td title="claude-opus-5">업무 정리</td><td class="num">2 · 2통</td><td class="num" title="입력 719 · 캐시 쓰기 18,744 · 캐시 읽기 0">19.5K</td><td class="num">1.3K</td><td class="num">47초</td><td class="num">$0.09</td><td><span class="ih-m">성공</span></td></tr><tr><td class="nw"><span class="num">09/09 13:02</span></td><td class="nw">자동 13시</td><td title="claude-opus-5">업무 정리</td><td class="num">1 · 1통</td><td class="num" title="입력 567 · 캐시 쓰기 18,705 · 캐시 읽기 0">19.3K</td><td class="num">960</td><td class="num">36초</td><td class="num">$0.09</td><td><span class="ih-m">성공</span></td></tr><tr><td class="nw"><span class="num">09/09 09:03</span></td><td class="nw">자동 09시</td><td title="claude-opus-5">업무 정리</td><td class="num">3 · 5통</td><td class="num" title="입력 1,079 · 캐시 쓰기 18,836 · 캐시 읽기 0">19.9K</td><td class="num">1.7K</td><td class="num">51초</td><td class="num">$0.10</td><td><span class="ih-m">성공</span></td></tr><tr><td class="nw"><span class="num">09/08 17:05</span></td><td class="nw">자동 17시</td><td title="claude-opus-5">업무 정리</td><td class="num">1 · 1통</td><td class="num" title="입력 567 · 캐시 쓰기 18,705 · 캐시 읽기 0">19.3K</td><td class="num">960</td><td class="num">38초</td><td class="num">$0.09</td><td><span class="ih-m">성공</span></td></tr><tr><td class="nw"><span class="num">09/08 13:04</span></td><td class="nw">자동 13시</td><td title="claude-opus-5">업무 정리</td><td class="num">1 · 2통</td><td class="num" title="입력 644 · 캐시 쓰기 18,725 · 캐시 읽기 0">19.4K</td><td class="num">960</td><td class="num">35초</td><td class="num">$0.09</td><td><span class="ih-m">성공</span></td></tr><tr><td class="nw"><span class="num">09/08 09:03</span></td><td class="nw">자동 09시</td><td title="claude-opus-5">업무 정리</td><td class="num">1 · 3통</td><td class="num" title="입력 786 · 캐시 쓰기 18,761 · 캐시 읽기 0">19.5K</td><td class="num">960</td><td class="num">36초</td><td class="num">$0.09</td><td><span class="ih-m">성공</span></td></tr><tr><td class="nw"><span class="num">09/07 17:04</span></td><td class="nw">자동 17시</td><td title="claude-opus-5">업무 정리</td><td class="num">2 · 2통</td><td class="num" title="입력 715 · 캐시 쓰기 18,743 · 캐시 읽기 0">19.5K</td><td class="num">1.3K</td><td class="num">46초</td><td class="num">$0.09</td><td><span class="ih-m">성공</span></td></tr><tr><td class="nw"><span class="num">09/07 13:01</span></td><td class="nw">자동 13시</td><td title="claude-opus-5">업무 정리</td><td class="num">1 · 1통</td><td class="num" title="입력 582 · 캐시 쓰기 18,709 · 캐시 읽기 0">19.3K</td><td class="num">960</td><td class="num">34초</td><td class="num">$0.09</td><td><span class="ih-m">성공</span></td></tr></tbody></table></div><p class="inote">최근 30번 · 입력에 마우스를 올리면 캐시 구성이, 실패에 올리면 메시지가 보입니다.</p></div></div></div><p class="page-foot">2026-09-18 11:00 기준 · 자동 정리가 돌 때마다 다시 만들어집니다</p></main><script>
+(function(){
+  var modes=['system','light','dark'],names={system:'시스템',light:'라이트',dark:'다크'};
+  var btn=document.getElementById('theme'),mode='system';
+  if(!btn)return;
+  try{mode=localStorage.getItem('nwmail.theme')||'system'}catch(e){}
+  if(modes.indexOf(mode)<0)mode='system';
+  function applyTheme(){
+    if(mode==='system')document.documentElement.removeAttribute('data-theme');
+    else document.documentElement.setAttribute('data-theme',mode);
+    btn.textContent='테마: '+names[mode];
+  }
+  btn.addEventListener('click',function(){mode=modes[(modes.indexOf(mode)+1)%3];
+    try{localStorage.setItem('nwmail.theme',mode)}catch(e){}applyTheme();});
+  applyTheme();
+})();
+
+(function(){
+  var box=document.querySelector('[data-usage]');if(!box)return;
+  var KEY='nwmail.usageView';
+  var btns=Array.prototype.slice.call(box.querySelectorAll('[data-sub]'));
+  function pick(key,push){
+    if(!btns.some(function(b){return b.dataset.sub===key;}))key=btns.length?btns[0].dataset.sub:'';
+    btns.forEach(function(b){b.setAttribute('aria-pressed',b.dataset.sub===key?'true':'false');});
+    box.querySelectorAll('[data-pane]').forEach(function(p){p.hidden=p.dataset.pane!==key;});
+    try{localStorage.setItem(KEY,key)}catch(e){}
+    if(push&&history.replaceState)history.replaceState(null,'','#'+key);
+    return key;
+  }
+  var start=location.hash.slice(1);
+  if(!start){try{start=localStorage.getItem(KEY)||''}catch(e){}}
+  pick(start,false);
+  btns.forEach(function(b){b.addEventListener('click',function(){pick(b.dataset.sub,true);});});
+  window.addEventListener('hashchange',function(){pick(location.hash.slice(1),false);});
+})();
+</script></body></html>

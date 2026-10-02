@@ -1,6 +1,7 @@
 """대시보드 로컬 서버. 이 PC 에서만 접속된다 (127.0.0.1).
 
   GET  /               out/dashboard.html (캐시하지 않음)
+  GET  /usage.html     out/usage.html — 토큰 사용 현황 (대시보드 머리말 버튼에서 넘어온다)
   GET  /api/ping       켜져 있는지 확인 (파일로 연 대시보드가 서버 주소로 옮겨 갈 때)
   GET  /api/feedback   내 할 일 · 대화 · 프로젝트 표시 상태 + 직접 정한 기한
   POST /api/feedback   완료 · 제외 · 업무삭제 · 되돌리기 기록
@@ -26,6 +27,8 @@ from .feedback import MARKS, FeedbackError, FeedbackStore
 BODY_MAX = 64_000
 KST = timezone(timedelta(hours=9))
 TOKEN_HEADER = "X-Nwmail-Token"
+# 보낼 수 있는 페이지: 주소 → out/ 안의 파일 이름 (None 이면 make_server 에 넘긴 대시보드 파일 그대로)
+PAGES = {"/": None, "/dashboard.html": None, "/usage.html": "usage.html"}
 
 
 class _Server(ThreadingHTTPServer):
@@ -40,12 +43,7 @@ class _Server(ThreadingHTTPServer):
 
 
 def make_server(port: int, page: Path, feedback: FeedbackStore,
-                host: str = "127.0.0.1", allowed_hosts=()) -> ThreadingHTTPServer:
-    """allowed_hosts: 127.0.0.1 · localhost 말고도 받을 주소 (클라우드에 올린 데모 서비스의 도메인 등).
-
-    주소 검사는 그대로 하고, 배포한 쪽이 명시한 주소만 더 받는다.
-    """
-    extra = {h.strip().lower() for h in allowed_hosts if h and h.strip()}
+                host: str = "127.0.0.1") -> ThreadingHTTPServer:
     token = feedback.token()
     lock = threading.Lock()                # sqlite 연결 하나를 요청 스레드들이 나눠 쓴다
 
@@ -72,8 +70,7 @@ def make_server(port: int, page: Path, feedback: FeedbackStore,
         def _local_host(self) -> bool:
             """DNS 리바인딩 방지: 주소창이 127.0.0.1/localhost 일 때만 받는다."""
             bound = self.server.server_address[1]
-            host = self.headers.get("Host", "")
-            return host in {f"127.0.0.1:{bound}", f"localhost:{bound}"} or host.lower() in extra
+            return self.headers.get("Host", "") in {f"127.0.0.1:{bound}", f"localhost:{bound}"}
 
         def _authorized(self) -> bool:
             return self._local_host() and self.headers.get(TOKEN_HEADER) == token
@@ -98,9 +95,11 @@ def make_server(port: int, page: Path, feedback: FeedbackStore,
                     "states": states, "dues": {k: _due_json(v) for k, v in dues.items()}, **{
                         f"{t}s": {k: _mark_json(v) for k, v in m.items()}
                         for t, m in marks.items()}})
-            if path in ("/", "/dashboard.html"):
+            # 대시보드와 그 옆에 같이 만들어 두는 토큰 사용 현황 페이지. 둘 다 out/ 안의 파일 그대로 보낸다
+            if path in PAGES:
+                name = PAGES[path]
                 try:
-                    body = page.read_bytes()
+                    body = (page.with_name(name) if name else page).read_bytes()
                 except OSError:
                     return self._send(HTTPStatus.SERVICE_UNAVAILABLE,
                                       "대시보드가 아직 없습니다. python dashboard.py 를 실행하세요."

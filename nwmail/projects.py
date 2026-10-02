@@ -1,11 +1,11 @@
 """프로젝트 식별 규칙.
 
 프로젝트는 고객사 > 세부 프로젝트 > 업무 세 단계로 묶는다.
-  오로라 > AX9 프라이빗 테니스클럽 > 알림톡 문구 변경 요청
+  오로라 > AX9 멤버십 테니스클럽 > 알림톡 문구 변경 요청
   오로라 > 오로라 한결카드 PLCC > 카카오톡 안내 알림톡 발송 요청
 
 실제 메일을 분석해 만든 규칙 (위에서부터 먼저 맞는 것):
-  1. 제목 키워드 ("AX9 프라이빗 테니스" -> AX9 프라이빗 테니스클럽, "PLCC" -> 한결카드 PLCC)
+  1. 제목 키워드 ("AX9 멤버십 테니스" -> AX9 멤버십 테니스클럽, "PLCC" -> 한결카드 PLCC)
   2. 업무 정리(LLM)가 고른 세부 프로젝트
   3. 제목 대괄호 태그. 누리·루미는 회사라서 프로젝트가 아니라, 그 회사가 맡은 일로 보낸다
      ([루미] -> 오로라 스토어, [NURI] = [누리마케팅] -> 오로라 운영(기타))
@@ -19,8 +19,8 @@
   -> "신청페이지 수정 관련 이미지 전달"
   "[NURI] 시그니처 신청 기한 연장 요청의 건_홍○동 고객"  (고객만 다른 메일끼리 묶임)
   -> "시그니처 신청 기한 연장 요청"
-  "[누리마케팅] AX9  프라이빗 테니스 클럽 레슨_알림톡 문구 변경 요청의 건"
-  -> "알림톡 문구 변경 요청"   (AX9 프라이빗 테니스클럽 안에서)
+  "[누리마케팅] AX9  멤버십 테니스 클럽 레슨_알림톡 문구 변경 요청의 건"
+  -> "알림톡 문구 변경 요청"   (AX9 멤버십 테니스클럽 안에서)
 """
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ NAME_END = r"(?=$|[\s\-–—:·_/,.()\[\]])"      # 키워드 뒤가 이어진 
 
 
 def squash(text: str) -> str:
-    """키워드 비교용: 띄어쓰기를 없애고 소문자로 ('AX9  프라이빗 테니스' = 'ax9프라이빗테니스')."""
+    """키워드 비교용: 띄어쓰기를 없애고 소문자로 ('AX9  멤버십 테니스' = 'ax9멤버십테니스')."""
     return re.sub(r"\s+", "", text or "").lower()
 
 
@@ -81,6 +81,7 @@ class ProjectRules:
     defaults: dict[str, str] = field(default_factory=dict)        # 고객사 -> 기본 프로젝트(기타)
     keywords: dict[str, list[str]] = field(default_factory=dict)  # 세부 프로젝트 -> 제목 키워드
     org_projects: dict[str, str] = field(default_factory=dict)    # 회사(누리·루미) -> 맡은 프로젝트
+    raw: dict = field(default_factory=dict)                       # projects.json 그대로 (대시보드 규칙 보기용)
 
     def is_project_tag(self, tag: str) -> bool:
         return tag.strip().lower() not in self.non_project_tags
@@ -163,6 +164,7 @@ def load_rules(path: str | None = None) -> ProjectRules:
         extract_skip=[s for s in (raw.get("extract_skip", DEFAULT_EXTRACT_SKIP) or []) if s.strip()],
         clients=clients, client_of=client_of, defaults=defaults, keywords=keywords,
         org_projects={k: v for k, v in (raw.get("org_projects") or {}).items() if v},
+        raw=raw,
     )
 
 
@@ -231,7 +233,7 @@ def _clean_title(text: str) -> str:
 def _strip_project(title: str, names: list[str]) -> str:
     """업무명 앞머리의 프로젝트 이름을 뗀다. 카드 제목이 이미 프로젝트 이름이라서.
 
-    "AX9 프라이빗 테니스 클럽 레슨_알림톡 문구 변경 요청" -> "알림톡 문구 변경 요청"
+    "AX9 멤버십 테니스 클럽 레슨_알림톡 문구 변경 요청" -> "알림톡 문구 변경 요청"
     "오로라 한결카드 (오로라 PLCC 3.0) 카카오톡 안내 알림톡" -> "카카오톡 안내 알림톡"
     """
     loose = [_loose(n) for n in sorted(names, key=len, reverse=True) if n.strip()]

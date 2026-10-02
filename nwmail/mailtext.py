@@ -24,6 +24,35 @@ PHONE = re.compile(
     r"|\+82[\s-]?\d{1,2}[\s-]?\d{3,4}[\s-]?\d{4}")
 
 
+# 네이버웍스·두레이 웹메일은 인용 머리말을 여러 줄로 쪼개 보낸다. 한 줄로 붙여야 인용으로 잡힌다.
+#   "\t---------- \n원본 메일\n ----------"   ·   "보낸사람\n: 홍길동 <a@b.com>"
+HEAD_WORD = re.compile(
+    r"^\s*(?:from|sent|to|cc|subject|date|보낸\s*사람|받는\s*사람|보낸\s*날짜|참조|제목)\s*$", re.I)
+DASH_LINE = re.compile(r"^\s*[-=_]{4,}\s*$")
+ORIGIN_LINE = re.compile(
+    r"^\s*(?:원본\s*메(?:일|시지)|original message|forwarded message)\s*$", re.I)
+
+
+def join_split_headers(body: str | None) -> str:
+    """쪼개진 인용 머리말을 한 줄로 모은다. 그 외 줄은 그대로 둔다."""
+    lines = (body or "").splitlines()
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line, nxt = lines[i], (lines[i + 1] if i + 1 < len(lines) else "")
+        if HEAD_WORD.match(line) and nxt.lstrip().startswith(":"):
+            out.append(f"{line.strip()}{nxt.strip()}")        # 보낸사람 + : 홍길동
+            i += 2
+            continue
+        if ORIGIN_LINE.match(line) and out and DASH_LINE.match(out[-1]):
+            out[-1] = "---------- 원본 메일 ----------"        # 구분선 + 원본 메일 + 구분선
+            i += 1 + (1 if i + 1 < len(lines) and DASH_LINE.match(lines[i + 1]) else 0)
+            continue
+        out.append(line)
+        i += 1
+    return "\n".join(out)
+
+
 def _is_head(line: str) -> bool:
     return not line.strip() or bool(HEADER_LINE.match(line) or QUOTE_LINE.match(line))
 
@@ -34,7 +63,7 @@ def split_quoted(body: str | None) -> tuple[str, str]:
     전달 메일은 맨 위가 헤더 블록(From:/Sent:/To:)으로 시작하는데, 그건 인용이
     아니라 전달된 내용의 머리이므로 건너뛰고 그 아래에서 인용 시작점을 찾는다.
     """
-    lines = (body or "").splitlines()
+    lines = join_split_headers(body).splitlines()
     i = 0
     while i < len(lines) and _is_head(lines[i]):
         i += 1

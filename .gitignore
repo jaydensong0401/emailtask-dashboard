@@ -9,8 +9,10 @@ mail.db
 mail.db-journal
 feedback.db
 feedback.db-journal
+.runtime-packages/
 
 # 데모 DB (python demo/build_demo.py 로 다시 만든다)
 demo/*.db
 demo/*.db-journal
 demo/served.html
+demo/usage.html

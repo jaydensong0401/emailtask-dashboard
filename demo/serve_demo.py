@@ -21,7 +21,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from demo.build_demo import DEMO_FB, DEMO_MAIL, PORT, SERVED, render, seed, write  # noqa: E402
+from demo.build_demo import (DEMO_FB, DEMO_MAIL, PORT, SERVED, render,  # noqa: E402
+                             render_usage, seed, write)
+from nwmail.dashboard import USAGE_PAGE                                            # noqa: E402
 from nwmail import filter_api                                                      # noqa: E402
 from nwmail.feedback import FeedbackStore                                          # noqa: E402
 from nwmail.server import make_server                                              # noqa: E402
@@ -42,17 +44,24 @@ def main() -> int:
 
     def rebuild() -> bool:
         write(SERVED, render({"port": port, "same_origin": args.cloud}))
+        write(SERVED.with_name(USAGE_PAGE), render_usage())    # 머리말 버튼이 여는 페이지
         return True
 
     rebuild()
     feedback = FeedbackStore(DEMO_FB)
     try:
-        server = make_server(port, SERVED, feedback, host="0.0.0.0" if args.cloud else "127.0.0.1",
-                             allowed_hosts=hosts)
+        server = make_server(port, SERVED, feedback, host="0.0.0.0" if args.cloud else "127.0.0.1")
     except OSError as e:
         print(f"[X] 포트 {port} 를 쓸 수 없습니다: {e}")
         feedback.close()
         return 1
+    if args.cloud and hosts:
+        # 로컬 서버는 주소창이 127.0.0.1 · localhost 일 때만 받는다 (DNS 리바인딩 방지). 클라우드 데모는
+        # 주소가 다르므로, 그 검사는 그대로 두고 DEMO_HOSTS 에 적은 주소만 더 받도록 여기서만 넓힌다.
+        handler, allowed = server.RequestHandlerClass, {h.lower() for h in hosts}
+        local_only = handler._local_host
+        handler._local_host = lambda self: (
+            self.headers.get("Host", "").split(":")[0].lower() in allowed or local_only(self))
     server.filters_handler = lambda data: filter_api.handle(
         data, store_factory=lambda: Store(DEMO_MAIL), rebuild=rebuild)
     if args.cloud:

@@ -116,7 +116,8 @@ def main() -> int:
         check("집계에 제외 수", m["stats"]["excluded"] == 1)
         check("실패 알림을 상단에 띄움 (이스케이프)",
               'class="banner warn" role="alert">메일 받기 실패(09/15 10:00): &lt;로그인 거부&gt;' in out)
-        check("머리에 마지막 정리 시각", '마지막 정리 <b class="num">09/15 09:00</b>' in out)
+        check("'자동 정리' 패널에 마지막 정리 시각",
+              '<dt>정리</dt><dd>마지막 <b class="num">09/15 09:00</b>' in out)
         check("자동 새로고침 코드 (조작 중이면 미룸, 스크롤 유지)",
               "location.reload()" in out and "nwmail.view" in out and "120000" in out)
 

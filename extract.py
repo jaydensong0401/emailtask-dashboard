@@ -16,7 +16,7 @@ def main() -> int:
     cfg = load_config()
     p = argparse.ArgumentParser(description="대화 업무·결정사항 추출")
     p.add_argument("-f", "--force", action="store_true",
-                   help="캐시를 무시하고 전부 다시 추출")
+                   help="캐시를 무시하고 다시 추출 (사용자가 분석 제외한 대화는 유지)")
     p.add_argument("-n", "--limit", type=int,
                    help="최근 N개 대화만 (시험 실행용)")
     p.add_argument("-d", "--days", type=int,
@@ -72,8 +72,10 @@ def main() -> int:
         history = sum(t["mail_count"] - t["recent_count"] for t in threads)
         print(f"{since:%m/%d} 이후 대화 {len(threads)}개 · 메일 {total}통 "
               f"(과거 이력 {history}통 포함) / 백엔드 {cfg.summary_backend}")
-        r = Extractor(cfg, store).run(threads, force=args.force, window_days=days)
-        print(f"\n완료: 추출 {r['extracted']} · 캐시 {r['cached']} · 실패 {r['failed']}")
+        r = Extractor(cfg, store).run(threads, force=args.force, window_days=days,
+                                      skipped=len(skipped))
+        print(f"\n완료: 추출 {r['extracted']} · 캐시 {r['cached']} · "
+              f"분석 제외 {r['excluded']} · 실패 {r['failed']}")
         if not args.limit and not r["failed"]:
             # 전부 성공했을 때만 기록한다. 실패가 있으면 다음 실행이 같은 기간을 다시 본다
             store.start_run(r["extracted"], kind="extract", started_at=started)

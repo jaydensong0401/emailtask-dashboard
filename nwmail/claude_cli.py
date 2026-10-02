@@ -20,6 +20,9 @@
    그 안에서 여는 터미널은 앱이 켜질 때의 환경을 물려받으므로 새 값을 모른다.
    게다가 창에 직접 넣은 값($env:)이 있으면 그게 우선한다. 그래서 창의 값이
    없거나 잘못됐으면 저장된 값(레지스트리)을 직접 읽어서 쓴다.
+
+사용량: `--output-format json` 으로 받아 답과 함께 토큰 · 모델 · API 환산 금액을 돌려준다
+(run_prompt_json). JSON 으로 읽히지 않으면 예전처럼 출력 글자를 그대로 답으로 쓴다.
 """
 from __future__ import annotations
 
@@ -28,6 +31,8 @@ import os
 import re
 import shutil
 import subprocess
+import time
+from dataclasses import dataclass
 
 # 자식 프로세스에서 제거해야 하는 환경변수
 STRIP_EXACT = {"ANTHROPIC_BASE_URL", "CLAUDECODE", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"}
@@ -87,8 +92,34 @@ def redact(text: str) -> str:
     return re.sub(r"sk-ant-[A-Za-z0-9_\-]+", "sk-ant-***", text)
 
 
+@dataclass
+class CliResult:
+    """print 모드 호출 한 번: 답 + 사용량. 토큰은 모델별 값을 더한 것이다.
+
+    Claude Code 는 본 호출 말고도 가벼운 모델로 보조 호출을 해서 modelUsage 에 따로 적는다.
+    cost_usd 는 CLI 가 계산한 API 환산값이다 (구독 사용량으로 처리되므로 실제 청구는 없다).
+    """
+    text: str
+    model: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    cost_usd: float = 0.0
+    seconds: float = 0.0
+
+    def usage(self) -> dict:
+        return {"model": self.model, "input_tokens": self.input_tokens,
+                "output_tokens": self.output_tokens, "cache_read_tokens": self.cache_read_tokens,
+                "cache_write_tokens": self.cache_write_tokens, "cost_usd": self.cost_usd}
+
+
 class ClaudeCliError(RuntimeError):
-    pass
+    """호출 실패. 실패해도 토큰을 쓴 경우(중간에 끊김 등)가 있어 result 에 사용량을 담아 둔다."""
+
+    def __init__(self, message: str = "", result: CliResult | None = None):
+        super().__init__(message)
+        self.result = result
 
 
 class NotLoggedIn(ClaudeCliError):
@@ -197,13 +228,68 @@ def token_problem(token: str | None) -> str | None:
     return None
 
 
-def run_prompt(prompt: str, model: str = "", timeout: int = 300,
-               exe: str | None = None) -> str:
-    """print 모드로 프롬프트를 던지고 표준출력을 그대로 돌려준다."""
+USAGE_FIELDS = (("input_tokens", "inputTokens", "input_tokens"),
+                ("output_tokens", "outputTokens", "output_tokens"),
+                ("cache_read_tokens", "cacheReadInputTokens", "cache_read_input_tokens"),
+                ("cache_write_tokens", "cacheCreationInputTokens", "cache_creation_input_tokens"))
+
+
+def result_json(stdout: str | None) -> dict | None:
+    """`--output-format json` 의 결과 객체. 앞뒤에 다른 줄이 섞여도 찾는다. 없으면 None."""
+    text = (stdout or "").strip()
+    if not text:
+        return None
+    for cand in (text, text[text.find("{"):text.rfind("}") + 1]):
+        try:
+            obj = json.loads(cand)
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and ("result" in obj or obj.get("type") == "result"):
+            return obj
+    return None
+
+
+def _num(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def result_from(res: dict, seconds: float = 0.0) -> CliResult:
+    """결과 객체에서 답 · 모델 · 사용량을 뽑는다. 모델별 사용량(modelUsage)이 있으면 모두 더한다."""
+    per = {k: v for k, v in (res.get("modelUsage") or {}).items() if isinstance(v, dict)}
+    if per:
+        tokens = {name: sum(_num(v.get(src)) for v in per.values()) for name, src, _ in USAGE_FIELDS}
+        main = max(per, key=lambda k: sum(_num(per[k].get(src)) for _, src, _ in USAGE_FIELDS))
+        model = per[main].get("canonicalModel") or main
+        cost = res.get("total_cost_usd")
+        if cost is None:
+            cost = sum(float(v.get("costUSD") or 0) for v in per.values())
+    else:
+        u = res.get("usage") if isinstance(res.get("usage"), dict) else {}
+        tokens = {name: _num(u.get(src)) for name, _, src in USAGE_FIELDS}
+        model, cost = "", res.get("total_cost_usd")
+    try:
+        cost = float(cost or 0)
+    except (TypeError, ValueError):
+        cost = 0.0
+    text = res.get("result")
+    return CliResult(text=text if isinstance(text, str) else "", model=str(model or ""),
+                     cost_usd=round(cost, 6), seconds=round(seconds, 1), **tokens)
+
+
+def run_prompt_json(prompt: str, model: str = "", timeout: int = 300,
+                    exe: str | None = None) -> CliResult:
+    """print 모드로 프롬프트를 던지고 답과 사용량을 돌려준다 (--output-format json).
+
+    출력이 JSON 으로 읽히지 않으면(예전 CLI 등) 표준출력을 그대로 답으로 쓰고 사용량은 0 으로 둔다.
+    """
     exe = exe or preflight()
-    cmd = [exe, "-p", "--disallowed-tools", NO_TOOLS]
+    cmd = [exe, "-p", "--output-format", "json", "--disallowed-tools", NO_TOOLS]
     if model:
         cmd += ["--model", model]
+    started = time.monotonic()
     try:
         p = subprocess.run(
             cmd, input=prompt, capture_output=True, text=True,
@@ -213,19 +299,33 @@ def run_prompt(prompt: str, model: str = "", timeout: int = 300,
     except subprocess.TimeoutExpired:
         raise ClaudeCliError(
             f"claude CLI 응답 시간 초과 ({timeout}초). "
-            "메일 수를 줄이거나 CLAUDE_CODE_TIMEOUT 을 늘리세요."
+            "메일 수를 줄이거나 CLAUDE_CODE_TIMEOUT 을 늘리세요.",
+            CliResult(text="", seconds=float(timeout)),
         ) from None
+    seconds = time.monotonic() - started
 
-    if p.returncode != 0:
-        detail = redact((p.stderr or p.stdout or "").strip())
+    res = result_json(p.stdout)
+    result = result_from(res, seconds) if res else None
+    if p.returncode != 0 or (res and res.get("is_error")):
+        detail = redact(((result.text if result else "") or p.stderr or p.stdout or "").strip())
         low = detail.lower()
         if "authorization" in low and "invalid" in low or "token is invalid" in low:
             raise ClaudeCliError(
                 "Claude 가 토큰을 거부했습니다 (만료됐거나 잘못된 토큰).\n"
-                "  `claude setup-token` 으로 다시 발급한 뒤 python set_token.py 로 저장하세요.")
+                "  `claude setup-token` 으로 다시 발급한 뒤 python set_token.py 로 저장하세요.",
+                result)
         if "login" in low or "not logged in" in low:
-            raise NotLoggedIn(LOGIN_HELP)
-        raise ClaudeCliError(f"claude CLI 실패 (exit {p.returncode}): {detail[:400]}")
-    if not (out := (p.stdout or "").strip()):
-        raise ClaudeCliError("claude CLI 가 빈 응답을 반환했습니다.")
-    return out
+            raise NotLoggedIn(LOGIN_HELP, result)
+        raise ClaudeCliError(f"claude CLI 실패 (exit {p.returncode}): {detail[:400]}", result)
+    if result is None:
+        result = CliResult(text=(p.stdout or "").strip(), seconds=round(seconds, 1))
+    if not result.text.strip():
+        raise ClaudeCliError("claude CLI 가 빈 응답을 반환했습니다.", result)
+    result.text = result.text.strip()
+    return result
+
+
+def run_prompt(prompt: str, model: str = "", timeout: int = 300,
+               exe: str | None = None) -> str:
+    """print 모드로 프롬프트를 던지고 답만 돌려준다 (사용량이 필요 없을 때)."""
+    return run_prompt_json(prompt, model=model, timeout=timeout, exe=exe).text
