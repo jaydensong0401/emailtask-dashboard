@@ -11,8 +11,9 @@ feedback.db
 feedback.db-journal
 .runtime-packages/
 
-# 데모 DB (python demo/build_demo.py 로 다시 만든다)
+# Synthetic demo runtime files; regenerate with demo/build_demo.py
 demo/*.db
-demo/*.db-journal
+demo/*.db-*
 demo/served.html
 demo/usage.html
+demo/rules.html

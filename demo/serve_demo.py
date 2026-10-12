@@ -22,8 +22,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from demo.build_demo import (DEMO_FB, DEMO_MAIL, PORT, SERVED, render,  # noqa: E402
-                             render_usage, seed, write)
-from nwmail.dashboard import USAGE_PAGE                                            # noqa: E402
+                             render_rules, render_usage, seed, write)
+from nwmail.dashboard import RULES_PAGE, USAGE_PAGE                                # noqa: E402
 from nwmail import filter_api                                                      # noqa: E402
 from nwmail.feedback import FeedbackStore                                          # noqa: E402
 from nwmail.server import make_server                                              # noqa: E402
@@ -45,6 +45,7 @@ def main() -> int:
     def rebuild() -> bool:
         write(SERVED, render({"port": port, "same_origin": args.cloud}))
         write(SERVED.with_name(USAGE_PAGE), render_usage())    # 머리말 버튼이 여는 페이지
+        write(SERVED.with_name(RULES_PAGE), render_rules())
         return True
 
     rebuild()

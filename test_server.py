@@ -96,6 +96,8 @@ def main() -> int:
         page = Path(tmp) / "dashboard.html"
         page.write_text("<!doctype html><title>대시보드</title>", encoding="utf-8")
         (Path(tmp) / "usage.html").write_text("<!doctype html><title>토큰 사용 현황</title>", encoding="utf-8")
+        rules_page = Path(tmp) / "rules.html"
+        rules_page.write_text("<!doctype html><title>메일 분류 규칙</title>", encoding="utf-8")
         server = make_server(0, page, fb)
         port = server.server_address[1]
         threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -124,6 +126,16 @@ def main() -> int:
             check("토큰 사용 현황 페이지 (대시보드 옆 파일 그대로)",
                   status == 200 and "토큰 사용 현황" in raw.decode()
                   and headers.get("Content-Type", "").startswith("text/html"))
+            status, headers, raw = req("GET", "/rules.html", tok=None)
+            check("메일 분류 규칙 페이지 (대시보드 옆 파일 그대로)",
+                  status == 200 and "메일 분류 규칙" in raw.decode()
+                  and headers.get("Cache-Control") == "no-store"
+                  and headers.get("Content-Type", "").startswith("text/html"))
+            check("분류 규칙도 다른 Host 면 거부",
+                  req("GET", "/rules.html", host=f"evil.example:{port}", tok=None)[0] == 403)
+            rules_page.unlink()
+            check("분류 규칙 페이지를 아직 생성하지 않았으면 503",
+                  req("GET", "/rules.html", tok=None)[0] == 503)
             check("없는 페이지는 404", req("GET", "/secrets.html", tok=None)[0] == 404)
             check("켜짐 확인은 토큰 없이", req("GET", "/api/ping", tok=None)[0] == 204)
             check("localhost 주소도 허용", req("GET", "/", host=f"localhost:{port}", tok=None)[0] == 200)
@@ -185,7 +197,15 @@ def main() -> int:
             check("조회에 대화 · 프로젝트 표시가 함께",
                   got["threads"]["<w@t>"]["label"] == "answered"
                   and got["projects"]["오로라 포럼"]["label"] == "done")
+            status, _, raw = req("POST", "/api/mark", dict(proj, label="not_mine"))
+            check("프로젝트 내 일 아님 기록 + 기준 시각",
+                  status == 200 and json.loads(raw)["state"]["label"] == "not_mine"
+                  and json.loads(raw)["state"]["ref_at"] == proj["ref_at"])
+            status, _, raw = req("GET", "/api/feedback")
+            check("조회에 프로젝트 내 일 아님 반영",
+                  status == 200 and json.loads(raw)["projects"]["오로라 포럼"]["label"] == "not_mine")
             for label, body in (("대상과 맞지 않는 표시", dict(wait, label="done")),
+                                ("대화에는 내 일 아님 표시 불가", dict(wait, label="not_mine")),
                                 ("알 수 없는 대상", dict(wait, target="task")),
                                 ("빈 키", dict(wait, key="")),
                                 ("기준 시각 형식", dict(wait, ref_at="어제"))):
@@ -196,7 +216,7 @@ def main() -> int:
                   and "오로라 포럼" not in fb.marks("project"))
             log = [r["action"] for r in fb.conn.execute(
                 "SELECT action FROM mark_log WHERE key = ? ORDER BY id", ("오로라 포럼",))]
-            check("누른 기록은 전부 남음", log == ["done", "open"], str(log))
+            check("누른 기록은 전부 남음", log == ["done", "not_mine", "open"], str(log))
 
             hdr("[4] 기한 직접 정하기 (/api/due)")
             body = {"task_id": TID, "due": "2026-09-25", "snapshot": {"text": "배너 회신", "deadline": ""}}

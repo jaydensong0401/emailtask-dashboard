@@ -1,5 +1,5 @@
 <#
-바탕화면에 '메일 대시보드' 바로가기를 만든다 (더블클릭하면 대시보드가 열린다).
+바탕화면에 'Mailwork' 바로가기를 만든다 (더블클릭하면 대시보드가 열린다).
 
   .\make_shortcut.ps1           만들기 (이미 있으면 덮어씀)
   .\make_shortcut.ps1 -Remove   지우기
@@ -11,7 +11,10 @@ param([switch]$Remove)
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$link = Join-Path ([Environment]::GetFolderPath('Desktop')) '메일 대시보드.lnk'
+$desktop = [Environment]::GetFolderPath('Desktop')
+$link = Join-Path $desktop 'Mailwork.lnk'
+$legacy = Join-Path $desktop '메일 대시보드.lnk'   # 이름을 바꾸기 전 바로가기. 만들기 · 지우기 때 같이 지운다
+if (Test-Path $legacy) { Remove-Item $legacy; "지움: $legacy" }
 
 if ($Remove) {
     if (Test-Path $link) { Remove-Item $link; "지움: $link" } else { "없음: $link" }
@@ -35,7 +38,7 @@ $s.TargetPath = $pythonw
 $s.Arguments = "`"$(Join-Path $root 'open_dashboard.py')`""
 $s.WorkingDirectory = $root
 $s.IconLocation = "$icon,0"
-$s.Description = '메일 업무 대시보드 열기 (http://127.0.0.1:8787)'
+$s.Description = 'Mailwork 열기 (http://127.0.0.1:8787)'
 $s.Save()
 
 "만듦: $link"

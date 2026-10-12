@@ -1,4 +1,4 @@
-"""대시보드 생성: 로컬 저장소를 읽어 out/dashboard.html 과 out/usage.html 을 만든다.
+"""로컬 저장소로 dashboard/usage/rules 페이지와 토큰 절감 보고서 이력을 만든다.
 
 메일함에 접속하지 않으므로 비밀번호가 필요 없다. 새 메일을 반영하려면
 먼저 `python sync.py`, 업무·결정사항을 채우려면 `python extract.py`.
@@ -11,9 +11,10 @@ import webbrowser
 from pathlib import Path
 
 from nwmail.config import ROOT, load_config
-from nwmail.dashboard import USAGE_PAGE, build_model, render_html, render_usage_html
+from nwmail.dashboard import RULES_PAGE, USAGE_PAGE, build_model, render_html, render_rules_html, render_usage_html
 from nwmail.feedback import FeedbackStore
 from nwmail.store import Store
+from nwmail.usage_report import save_report
 
 
 def server_running(port: int) -> bool:
@@ -59,10 +60,15 @@ def main() -> int:
     # 토큰 사용 현황은 따로 만든 페이지. 대시보드 옆에 같이 두어야 머리말 버튼의 링크가 닿는다
     usage_out = args.out.with_name(USAGE_PAGE)
     write(usage_out, render_usage_html(model))
+    rules_out = args.out.with_name(RULES_PAGE)
+    write(rules_out, render_rules_html(model))
+    report_out = save_report(model["usage"]["reduction_report"])
 
     s = model["stats"]
     print(f"[OK] {args.out}")
     print(f"[OK] {usage_out}")
+    print(f"[OK] {rules_out}")
+    print(f"[OK] {report_out}")
     skipped = f" (정기 메일 {s['excluded']}개 제외)" if s["excluded"] else ""
     print(f"  최근 {args.days}일 대화 {s['threads']}개 (과거 메일 {s['history']}통 포함) · "
           f"프로젝트 {len(model['projects'])} · "

@@ -291,6 +291,7 @@ def summary(store: Store, now: datetime | None = None, days: int = 7,
     total = {"tokens": int((tot or {}).get("tokens") or 0), "calls": int((tot or {}).get("calls") or 0),
              "cost": round(float((tot or {}).get("cost") or 0), 4), "fails": int((tot or {}).get("fails") or 0),
              "span": span, "per_day": round(int((tot or {}).get("tokens") or 0) / span) if span else 0}
+    from .usage_report import build_report
     return {
         "has_data": bool(first_at), "first_at": first_at, "days": days,
         "today": cur["today"], "week": cur["week"], "month": cur["month"],
@@ -307,6 +308,7 @@ def summary(store: Store, now: datetime | None = None, days: int = 7,
         "probe": {"tokens": probe["input_tokens"] + probe["cache_read_tokens"] + probe["cache_write_tokens"],
                   "at": probe["at"], "model": probe["model"]} if probe else None,
         "log": [_call_view(r, slot_times) for r in log],
+        "reduction_report": build_report(store, now=now, days=days),
     }
 
 

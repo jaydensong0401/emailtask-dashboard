@@ -2,10 +2,11 @@
 
   GET  /               out/dashboard.html (캐시하지 않음)
   GET  /usage.html     out/usage.html — 토큰 사용 현황 (대시보드 머리말 버튼에서 넘어온다)
+  GET  /rules.html     out/rules.html — 메일 분류 규칙 (대시보드 머리말 버튼에서 넘어온다)
   GET  /api/ping       켜져 있는지 확인 (파일로 연 대시보드가 서버 주소로 옮겨 갈 때)
   GET  /api/feedback   내 할 일 · 대화 · 프로젝트 표시 상태 + 직접 정한 기한
   POST /api/feedback   완료 · 제외 · 업무삭제 · 되돌리기 기록
-  POST /api/mark       답을 기다리는 메일 답변완료 · 프로젝트 완료 · 삭제 · 되돌리기 기록
+  POST /api/mark       답변완료 · 프로젝트 완료 · 내 일 아님 · 삭제 · 되돌리기 기록
   POST /api/due        할 일 기한 직접 정하기 · 메일 기한으로 되돌리기 (일정 탭)
   POST /api/color      프로젝트 색 바꾸기 · 자동 색으로 되돌리기 (프로젝트 탭 머리줄 색 막대)
 
@@ -30,7 +31,7 @@ BODY_MAX = 64_000
 KST = timezone(timedelta(hours=9))
 TOKEN_HEADER = "X-Nwmail-Token"
 # 보낼 수 있는 페이지: 주소 → out/ 안의 파일 이름 (None 이면 make_server 에 넘긴 대시보드 파일 그대로)
-PAGES = {"/": None, "/dashboard.html": None, "/usage.html": "usage.html"}
+PAGES = {"/": None, "/dashboard.html": None, "/usage.html": "usage.html", "/rules.html": "rules.html"}
 
 
 class _Server(ThreadingHTTPServer):
@@ -99,7 +100,7 @@ def make_server(port: int, page: Path, feedback: FeedbackStore,
                     "colors": {k: _color_json(v) for k, v in colors.items()}, **{
                         f"{t}s": {k: _mark_json(v) for k, v in m.items()}
                         for t, m in marks.items()}})
-            # 대시보드와 그 옆에 같이 만들어 두는 토큰 사용 현황 페이지. 둘 다 out/ 안의 파일 그대로 보낸다
+            # 대시보드와 그 옆의 토큰 사용 현황 · 메일 분류 규칙 페이지를 파일 그대로 보낸다
             if path in PAGES:
                 name = PAGES[path]
                 try:

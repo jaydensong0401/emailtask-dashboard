@@ -13,7 +13,8 @@ from pathlib import Path
 
 from nwmail.client import Mail
 from nwmail.dashboard import (
-    USAGE_PAGE, build_model, deadline_info, render_html, render_usage_html, task_id,
+    RULES_PAGE, USAGE_PAGE, build_model, deadline_info, render_html, render_rules_html,
+    render_usage_html, task_id,
 )
 from nwmail.feedback import FeedbackStore
 from nwmail.filters import add_filter, reapply
@@ -270,17 +271,66 @@ def main() -> int:
         check("[루미] 는 오로라 스토어, [NURI] · [누리마케팅] 은 오로라 운영(기타)",
               "오로라 스토어" in names and names.count("오로라 운영(기타)") == 1)
         check("태그 없는 스레드는 미분류", "미분류" in names)
-        check("미분류 카드는 맨 뒤", names[-1] == "미분류", str(names))
-        clients = re.findall(r'<section class="client" data-client="([^"]*)"', out)
-        check("고객사는 설정 순서, 설정에 없는 건 '기타' 묶음으로 맨 뒤",
-              clients == ["오로라", "KX볼트링크", ""], str(clients))
-        aurora = section(out, '<section class="client" data-client="오로라"',
-                          ('<section class="client"',))
+        pending = lambda p: bool(p["progress"]["open"] and p["pstate"] in ("open", "delayed"))
+        by_name = {p["name"]: p for p in model["projects"]}
+        priorities = [not pending(p) for p in model["projects"]]
+        check("모델은 남은 할 일 있는 프로젝트가 먼저 (고객사 · 미분류보다 우선)",
+              priorities == sorted(priorities), str([(p["name"], pending(p)) for p in model["projects"]]))
+        misc_peers = [p["name"] for p in model["projects"]
+                      if p["client"] == by_name["미분류"]["client"]
+                      and pending(p) == pending(by_name["미분류"])]
+        check("미분류는 같은 고객사 · 같은 남은 일 우선순위 안에서 맨 뒤",
+              misc_peers[-1] == "미분류", str(misc_peers))
+        client_sections = re.findall(r'<section class="client" data-client="([^"]*)" data-band="([01])"', out)
+        clients = list(dict.fromkeys(c for c, _ in client_sections))
+        client_priority = [not any(pending(p) for p in model["projects"] if p["client"] == c)
+                           for c in clients]
+        check("고객사는 남은 일 있는 묶음 먼저, 같으면 설정 순서 · 기타 순",
+              set(clients) == {"오로라", "KX볼트링크", ""}
+              and client_priority == sorted(client_priority)
+              and clients.index("오로라") < clients.index("KX볼트링크"), str(clients))
+        rendered_priority = [not pending(by_name[n]) for n in names]
+        check("렌더링된 카드도 전역으로 남은 일 있는 프로젝트를 먼저 배치",
+              rendered_priority == sorted(rendered_priority), str(names))
+        check("고객사 묶음은 남은 일 구간 다음 나머지 구간 순",
+              [band for _, band in client_sections] == sorted(band for _, band in client_sections))
+        aurora = "".join(section(out, f'<section class="client" data-client="오로라" data-band="{band}"',
+                                  ('<section class="client"',)) for band in (0, 1))
         g_names = re.findall(r'data-project="([^"]+)"', aurora)
         check("세부 프로젝트가 고객사 아래로 (AX9 · PLCC · 갤러리 · 스토어)",
               {"AX9 멤버십 테니스클럽", "오로라 한결카드 PLCC", "오로라 갤러리",
                "오로라 스토어", "오로라 운영(기타)"} == set(g_names), str(g_names))
-        check("기본 프로젝트(기타)는 고객사 안에서 맨 뒤", g_names[-1] == "오로라 운영(기타)")
+        g_priority = [not pending(by_name[n]) for n in g_names]
+        default_peers = [n for n in g_names if pending(by_name[n]) == pending(by_name["오로라 운영(기타)"])]
+        check("고객사 안도 남은 일 먼저, 기본 프로젝트는 같은 우선순위에서 맨 뒤",
+              g_priority == sorted(g_priority) and default_peers[-1] == "오로라 운영(기타)", str(g_names))
+        with Store(Path(tmp) / "sorting.db") as sort_store, FeedbackStore(Path(tmp) / "sorting-feedback.db") as sort_fb:
+            sort_store.save_mails([
+                mail(101, "[KX볼트링크] 처리 기록", "peer@example.org", "<sort-done@test>"),
+                mail(102, "[누리마케팅] 다음 업무", "peer@example.org", "<sort-aurora@test>"),
+                mail(103, "분류 전 업무 확인", "peer@example.org", "<sort-unknown@test>"),
+            ], ME)
+            for key, task in (("<sort-done@test>", ""), ("<sort-aurora@test>", "진행 자료 확인"),
+                              ("<sort-unknown@test>", "분류 전 자료 확인")):
+                put_extraction(sort_store, key, {"summary": "업무 확인", "status": "진행중",
+                    "tasks": [{"text": task, "role": "기타"}] if task else [], "my_actions": []})
+            sorted_model = build_model(sort_store, me=ME, today=TODAY, now=NOW, feedback=sort_fb)
+            check("남은 일 있는 미분류도 할 일 없는 설정 고객사보다 먼저",
+                  [p["name"] for p in sorted_model["projects"]]
+                  == ["오로라 운영(기타)", "미분류", "KX볼트링크"])
+            sorted_cards = re.findall(r'data-project="([^"]+)"', render_html(sorted_model))
+            check("렌더링도 남은 일 있는 기타 고객사의 카드를 할 일 없는 고객사 위로",
+                  sorted_cards == ["오로라 운영(기타)", "미분류", "KX볼트링크"], str(sorted_cards))
+            sort_fb.apply(task_id("<sort-aurora@test>", "task", "진행 자료 확인"), "done", now=NOW)
+            completed_model = build_model(sort_store, me=ME, today=TODAY, now=NOW, feedback=sort_fb)
+            check("마지막 할 일을 완료하면 남은 일 있는 미분류가 맨 위로 이동",
+                  [p["name"] for p in completed_model["projects"]]
+                  == ["미분류", "오로라 운영(기타)", "KX볼트링크"])
+            sort_fb.apply(task_id("<sort-aurora@test>", "task", "진행 자료 확인"), "open", now=NOW)
+            restored_model = build_model(sort_store, me=ME, today=TODAY, now=NOW, feedback=sort_fb)
+            check("완료 되돌리기는 남은 일 우선 정렬을 다시 반영",
+                  [p["name"] for p in restored_model["projects"]]
+                  == ["오로라 운영(기타)", "미분류", "KX볼트링크"])
         check("'기타' 묶음 머리말", '<h2>기타</h2>' in out and '<h2>오로라</h2>' in aurora)
         misc_ops = section(out, 'data-project="오로라 운영(기타)"', ('<details class="proj"', '<section class="client"'))
         check("키워드 · 태그 없는 오로라 도메인 메일은 오로라 운영(기타)", "신규 매장 오픈" in misc_ops)
@@ -293,8 +343,9 @@ def main() -> int:
         check("프로젝트는 접힌 상태로 시작 (아코디언)",
               '<details class="proj"' in out and not re.search(r'<details class="proj"[^>]* open', out))
         check("머리말에 최근 메일 날짜", '최근 <span class="num">09/08</span>' in gv)
-        check("머리말에 ⋮ 메뉴 (프로젝트 완료 · 삭제 · 되돌리기)",
-              'class="kb-btn"' in gv and 'data-pmark="done">직접 완료 처리' in gv
+        check("머리말에 ⋮ 메뉴 (프로젝트 완료 · 내 일 아님 · 삭제 · 되돌리기)",
+              'class="kb-btn"' in gv and 'data-pmark="done">완료' in gv
+              and 'data-pmark="not_mine">내 일 아님' in gv
               and 'data-pmark="deleted">삭제' in gv and 'data-pmark="open">자동 분류로 되돌리기' in gv)
         check("진행 중 · 완료 · 지연 · 삭제 보기 (추출 완료된 빈 프로젝트는 완료)",
               'data-pview="open"' in out and 'aria-pressed="true">진행 중' in out
@@ -1041,23 +1092,30 @@ def main() -> int:
               "정산표 검수" not in sched_deleted and "API 연동 개발" not in sched_deleted
               and "기획안 회신" in sched_deleted)
 
-        hdr("[11] 맨 아래 2depth — 메일 분류 규칙")
+        hdr("[11] 메일 분류 규칙 — 별도 페이지 (rules.html)")
         from nwmail import usage as usage_mod
         from nwmail.projects import load_rules
-        info = section(out, '<section class="info"', ("</main>",))
-        check("탭 영역(카드) 아래에 붙어 어느 탭을 보든 보임",
-              '</div><section class="info"' in out and out.find('<section class="info"') > out.find('id="tab-blocked"'))
-        check("1depth 한 줄 (메일 분류 규칙), 처음엔 접힘",
-              re.findall(r'data-info="(\w+)"', info) == ["rules"]
-              and info.count('aria-expanded="false"') == 1
-              and len(re.findall(r'class="info-b"[^>]*hidden>', info)) == 1)
-        check("2depth 보기: 규칙 5, 첫 보기만 펼침",
+        info = render_rules_html(model)
+        check("대시보드 하단 규칙 영역을 제거하고 상단에 별도 페이지 버튼",
+              '<section class="info"' not in out and 'data-info="rules"' not in out
+              and f'href="{RULES_PAGE}"' in out)
+        head_buttons = [out.find('class="pill usage-link"'), out.find('class="pill rules-link"'),
+                        out.find('id="theme"')]
+        check("상단 버튼 순서: 토큰 사용 현황 → 메일 분류 규칙 → 테마 (기존 버튼 유지)",
+              -1 not in head_buttons and head_buttons == sorted(head_buttons), str(head_buttons))
+        check("분류 규칙 5개 보기, 처음에는 한눈에 보기만 펼침",
               re.findall(r'data-sub="(\w+)"', info) == ["flow", "block", "proj", "task", "reply"]
               and re.findall(r'data-pane="(\w+)">', info) == ["flow"])
-        check("토큰 사용 현황은 맨 아래가 아니라 따로 만든 페이지로 감",
-              "토큰 사용 현황" not in info and 'data-pane="sum"' not in out)
+        check("분류 규칙은 자체 페이지 · 대시보드로 돌아가기 · 같은 테마 설정",
+              "<!doctype html>" in info and '<a class="back" href="./">' in info
+              and 'id="theme"' in info and "nwmail.theme" in info and "nwmail.theme" in out)
+        check("규칙 페이지도 외부 리소스 없이 메일 제목을 이스케이프",
+              not re.search(r'<(script|link|img)[^>]+(src|href)=["\']?https?:', info)
+              and "<script>alert(1)" not in info and "&lt;script&gt;alert(1)" in info)
+        check("토큰 사용 현황과 규칙 보기 내용은 별도 페이지에 유지",
+              'data-pane="sum"' not in info and 'data-pane="sum"' not in out)
         unknown = sum(th["basis"] == "unknown" for p in model["projects"] for th in p["threads"])
-        check("접혀 있어도 보이는 요약 한 줄 (보호 도메인 · 규칙 · 세부 프로젝트 · 미분류)",
+        check("규칙 페이지 요약 (보호 도메인 · 규칙 · 세부 프로젝트 · 미분류)",
               f"보호 도메인 3 · 차단 규칙 1 · 세부 프로젝트 {len(load_rules().client_of)} · 최근 7일 미분류 "
               f"{unknown}건" in info and unknown == 1, str(unknown))
         groups = {k: section(info, f'<details class="ib-d ib-{k}">', ("</details>",))
@@ -1075,25 +1133,27 @@ def main() -> int:
         pos = [task_pane.find(f"</span>{r}</span>") for r in ("수정", "개발", "디자인", "기타")]
         check("역할은 판정 순서대로 (수정 → 개발 → 디자인 → 기타)", -1 not in pos and pos == sorted(pos), str(pos))
         check("한눈에 보기 6단계 · 차단됨 탭으로 가는 링크",
-              info.count('<li class="if">') == 6 and 'href="#blocked"' in info)
-        check("펼친 줄 · 고른 보기는 브라우저에 기억 + 탭 링크",
-              "var IK='nwmail.info'" in out and "addEventListener('hashchange'" in out)
+              info.count('<li class="if">') == 6 and 'href="./#blocked"' in info)
+        check("규칙의 고른 보기는 주소와 브라우저에 남김",
+              "nwmail.rulesView" in info and "addEventListener('hashchange'" in info
+              and "location.hash" in info and "localStorage" in info)
 
         hdr("[11b] 토큰 사용 현황 — 따로 만든 페이지 (usage.html)")
         page0 = render_usage_html(model)
-        check("대시보드 머리말에 테마 옆 버튼, 새 페이지로 감",
+        check("대시보드 머리말의 사용량 버튼 유지, 별도 페이지로 감",
               '<div class="hero-acts">' in out and f'href="{USAGE_PAGE}"' in out
               and out.find('class="pill usage-link"') < out.find('id="theme"'))
         check("토큰 기록이 없으면 빈 상태 안내",
               "아직 기록 없음" in page0 and "아직 기록이 없습니다" in page0)
-        check("파비콘은 두 페이지 모두에 (파일로 열어도 보이게 data URI)",
+        check("파비콘은 대시보드 · 규칙 · 토큰 사용 현황에 (파일로 열어도 data URI)",
               out.count('<link rel="icon" href="data:image/svg+xml,') == 1
+              and info.count('<link rel="icon" href="data:image/svg+xml,') == 1
               and page0.count('<link rel="icon" href="data:image/svg+xml,') == 1)
         check("대시보드로 돌아가는 링크 · 테마 버튼은 같이 씀",
               '<a class="back" href="./">' in page0 and 'id="theme"' in page0
               and "nwmail.theme" in page0 and "nwmail.theme" in out)
-        check("2depth 보기 3개, 첫 보기만 펼침 · 고른 보기는 주소와 브라우저에 남김",
-              re.findall(r'data-sub="(\w+)"', page0) == ["sum", "where", "log"]
+        check("토큰 보기 4개 (사용량 · 쓰임 · 절감 보고서 · 기록), 첫 보기만 펼침",
+              re.findall(r'data-sub="(\w+)"', page0) == ["sum", "where", "reduction", "log"]
               and re.findall(r'data-pane="(\w+)">', page0) == ["sum"]
               and "nwmail.usageView" in page0)
 
@@ -1129,7 +1189,7 @@ def main() -> int:
         check("일별 막대에도 하루 전보다 늘고 준 양", '<span class="it-d up">▲ 41.8K</span>' in sum_pane)
         check("회차별: 자동 09시 · 13시 · 17시", all(f'<span class="ib-l">{h}시</span>' in sum_pane
                                                for h in ("09", "13", "17")))
-        where = section(info_u, 'data-pane="where"', ('data-pane="log"',))
+        where = section(info_u, 'data-pane="where"', ('data-pane="reduction"',))
         check("호출마다 붙는 기본 지시문 = 확인 호출 입력", "약 19.2K 토큰" in where)
         check("무거운 대화: 글자 수 비율로 나눈 추정 토큰 (3:1)", "16.9K" in where and "5.6K" in where)
         check("대화 제목은 이스케이프", "<script>alert(1)" not in info_u and "&lt;script&gt;alert(1)" in info_u)

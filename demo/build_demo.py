@@ -23,9 +23,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from nwmail.client import Mail                                      # noqa: E402
-from nwmail.dashboard import (USAGE_PAGE, build_model, esc, render_html,  # noqa: E402
-                              render_usage_html, task_id)
-from nwmail.feedback import MARKS, FeedbackStore                    # noqa: E402
+from nwmail.dashboard import (RULES_PAGE, USAGE_PAGE, build_model, esc, render_html,  # noqa: E402
+                              render_rules_html, render_usage_html, task_id)
+from nwmail.feedback import LABELS, MARKS, REASONS, FeedbackStore    # noqa: E402
 from nwmail.filters import add_filter, add_protected, reapply       # noqa: E402
 from nwmail.server import _color_json, _due_json, _mark_json        # noqa: E402
 from nwmail.store import Store                                      # noqa: E402
@@ -44,6 +44,8 @@ ME = "gdhong@lumi.example"
 ME_NAME = "홍길동 선임"
 TEAM = "team@lumi.example"
 NOTICE = "데모 화면입니다 — 회사 · 사람 · 메일은 모두 가상이며 실제 메일은 들어 있지 않습니다."
+STATIC_FILTER_NOTICE = ("이 파일형 데모에서는 완료·제외·프로젝트 상태·기한·색을 이 브라우저에 저장합니다. "
+                        "차단 규칙·보호 도메인 변경은 전체 대시보드를 다시 계산하는 로컬 데모 서버에서 체험할 수 있습니다.")
 OPEN_PROJECT = "오로라 운영(기타)"    # 처음부터 펼쳐 둘 프로젝트 카드 (기본 보기인 '진행 중' 에 있는 것)
 
 # 이름 -> (보낸사람 표시, 주소)
@@ -102,7 +104,8 @@ THREADS = [
                tasks=[task("기획전 상세 페이지 개발", "개발", "김하늘", "루미", "2026-09-21"),
                       task("메인 배너 B안 최종 시안 제작", "디자인", "박도윤", "루미", "2026-09-19"),
                       task("상품 설명 문구 수정 반영", "수정", "박도윤", "루미", "2026-09-18", "디자인"),
-                      task("기획전 쿠폰 코드 전달", "기타", "이지우", "오로라", "2026-09-19")],
+                      task("기획전 쿠폰 코드 전달", "기타", "이지우", "오로라", "2026-09-19"),
+                      task("기획전 페이지 최종 검수 후 오픈 승인 요청", "기타", "홍길동", "루미", "2026-09-21")],
                my_actions=[act("기획전 페이지 최종 검수 후 오픈 승인 요청", "2026-09-21", "high")])),
     dict(key="store-delay", subject="[루미] 스토어몰 배송 지연 고객 안내 문자 발송 건", mails=[
         ("윤서진", at(9, 16, "14:05"), ["me"], [],
@@ -495,6 +498,22 @@ def feedback_seed(fb: FeedbackStore) -> dict:
             **{f"{t}s": {k: _mark_json(v) for k, v in fb.marks(t).items()} for t in MARKS}}
 
 
+def demo_page(html: str) -> str:
+    """운영 렌더러를 유지하면서 데모의 첫 화면만 라이트로 시작한다.
+
+    수동 테마 선택은 세 페이지에서 공유하며 운영 화면의 설정과 섞이지 않는다.
+    첫 페인트 전에도 data-theme 를 적용하여 OS 가 다크여도 깜박이지 않는다.
+    """
+    html = html.replace('<html lang="ko">', '<html lang="ko" data-theme="light">', 1)
+    html = html.replace("'nwmail.theme'", "'mailwork.demo.theme'")
+    html = html.replace("mode='system'", "mode='light'")
+    html = html.replace("getItem('mailwork.demo.theme')||'system'", "getItem('mailwork.demo.theme')||'light'")
+    init = ("<script>(function(){var m='light';try{m=localStorage.getItem('mailwork.demo.theme')||m}catch(e){}"
+            "if(m==='system')document.documentElement.removeAttribute('data-theme');"
+            "else document.documentElement.setAttribute('data-theme',m==='dark'?'dark':'light');})();</script>")
+    return html.replace('<head>', '<head>' + init, 1)
+
+
 def icon_links() -> str:
     """탭 아이콘. 페이지 하나로 끝나도록 data URI 로 심는다 (PNG 는 SVG 를 못 쓰는 브라우저 · 홈 화면용)."""
     def uri(name: str, mime: str) -> str:
@@ -523,11 +542,18 @@ def render(server: dict | None) -> str:
         seed = json.dumps(seed_state, ensure_ascii=False).replace("<", "\\u003c")
         version = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:10]
         api = (HERE / "demo_api.js").read_text(encoding="utf-8")
+        contract = json.dumps({"labels": LABELS, "reasons": REASONS, "marks": MARKS},
+                              ensure_ascii=False).replace("<", "\\u003c")
         html = html.replace(
             '<script type="application/json" id="nw-conf">',
             f'<script type="application/json" id="demo-seed" data-version="{version}">{seed}</script>'
+            f'<script type="application/json" id="demo-contract">{contract}</script>'
             f'<script>{api}</script><script type="application/json" id="nw-conf">', 1)
-    return html
+        html = html.replace("lock(true,'대시보드 서버 주소에서 열면 바꿀 수 있습니다');",
+                            "lock(true,'차단 규칙 변경은 로컬 데모 서버에서 체험할 수 있습니다');", 1)
+        html = html.replace("say('규칙 · 보호 도메인 변경은 대시보드 서버 주소(http://127.0.0.1:'+(c.port||8787)+'/)로 열었을 때 저장됩니다.');",
+                            "say(" + json.dumps(STATIC_FILTER_NOTICE, ensure_ascii=False) + ");", 1)
+    return demo_page(html)
 
 
 def render_usage() -> str:
@@ -537,9 +563,21 @@ def render_usage() -> str:
     html = render_usage_html(model)
     html = html.replace('initial-scale=1">', 'initial-scale=1">' + icon_links(), 1)
     # 대시보드를 거치지 않고 바로 열 수도 있어서 여기에도 데모 안내를 둔다
-    return html.replace('<div class="usage-body" data-usage>',
+    return demo_page(html.replace('<div class="usage-body" data-usage>',
+                                 f'<div class="banner" role="note">{esc(NOTICE)}</div>'
+                                 '<div class="usage-body" data-usage>', 1))
+
+
+def render_rules() -> str:
+    """상단 메일 분류 규칙 페이지도 현재 운영 렌더러와 같은 모델로 만든다."""
+    with Store(DEMO_MAIL) as st, FeedbackStore(DEMO_FB) as fb:
+        model = build_model(st, me=ME, now=NOW, window_days=7, feedback=fb)
+    html = render_rules_html(model)
+    html = html.replace('initial-scale=1">', 'initial-scale=1">' + icon_links(), 1)
+    html = html.replace('<div class="usage-body" data-usage data-view-key=',
                         f'<div class="banner" role="note">{esc(NOTICE)}</div>'
-                        '<div class="usage-body" data-usage>', 1)
+                        '<div class="usage-body" data-usage data-view-key=', 1)
+    return demo_page(html)
 
 
 def write(path: Path, html: str) -> None:
@@ -557,11 +595,13 @@ def main() -> int:
     PAGES.parent.mkdir(exist_ok=True)
     write(PAGES, render(None))
     write(PAGES.with_name(USAGE_PAGE), render_usage())
+    write(PAGES.with_name(RULES_PAGE), render_rules())
     (PAGES.parent / ".nojekyll").touch()           # GitHub Pages 가 파일을 그대로 내보내도록
     with Store(DEMO_MAIL) as st:
         s = st.stats(None)
     print(f"[OK] {PAGES.relative_to(ROOT)}  (메일 {s.get('total')}통, 서버 없이 열리는 데모)")
     print(f"[OK] {PAGES.with_name(USAGE_PAGE).relative_to(ROOT)}  (토큰 사용 현황)")
+    print(f"[OK] {PAGES.with_name(RULES_PAGE).relative_to(ROOT)}  (메일 분류 규칙)")
     print("  데모 서버로 열려면: python demo/serve_demo.py  -> http://127.0.0.1:8790/")
     return 0
 

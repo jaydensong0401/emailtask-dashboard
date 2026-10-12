@@ -1,4 +1,4 @@
-"""할 일 표시 기록 (완료 · 제외 · 업무삭제) + 대화 · 프로젝트 표시 (답변완료 · 프로젝트 완료 · 삭제).
+"""할 일 표시 기록 (완료 · 제외 · 업무삭제) + 대화 · 프로젝트 표시 (답변완료 · 완료 · 내 일 아님 · 삭제).
 
 내 할 일(오늘 탭)과 프로젝트 할 일(프로젝트 탭)을 같은 표에 둔다. kind 로 구분한다.
 답을 기다리는 메일과 프로젝트의 ⋮ 메뉴 표시는 marks 표에 따로 둔다.
@@ -38,7 +38,7 @@ TASK_ID = re.compile(r"^[0-9a-f]{12}$")
 # 답을 기다리는 메일(대화)과 프로젝트에 붙이는 표시. 삭제는 대시보드에서 숨기기만 한다 (메일은 그대로)
 MARKS = {
     "thread": {"answered": "답변완료", "deleted": "삭제"},
-    "project": {"done": "완료", "deleted": "삭제"},
+    "project": {"done": "완료", "not_mine": "내 일 아님", "deleted": "삭제"},
 }
 MARK_KEY_MAX = 500
 DUE_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS feedback_log (       -- 누른 기록 전체 (되돌�
 CREATE TABLE IF NOT EXISTS marks (             -- 대화 · 프로젝트 하나당 현재 표시 (없으면 진행 중)
     target      TEXT NOT NULL,                  -- thread | project
     key         TEXT NOT NULL,                  -- 대화 키 | 프로젝트 이름
-    label       TEXT NOT NULL,                  -- thread: answered | deleted, project: done | deleted
+    label       TEXT NOT NULL,                  -- thread: answered | deleted, project: done | not_mine | deleted
     ref_at      TEXT DEFAULT '',                -- 표시할 때 마지막으로 받은 메일 시각. 이후 새 메일이
                                                 -- 오면 답변완료 · 프로젝트 완료는 풀린다
     title       TEXT DEFAULT '',                -- 표시할 때의 제목 (기록 확인용)
@@ -310,7 +310,7 @@ class FeedbackStore:
         return dict(self.conn.execute("SELECT * FROM task_feedback WHERE task_id = ?",
                                       (new_id,)).fetchone())
 
-    # ── 대화 · 프로젝트 표시 (답변완료 · 프로젝트 완료 · 삭제) ─────────────────
+    # ── 대화 · 프로젝트 표시 (답변완료 · 완료 · 내 일 아님 · 삭제) ────────────
     def marks(self, target: str) -> dict[str, dict]:
         return {r["key"]: dict(r) for r in self.conn.execute(
             "SELECT * FROM marks WHERE target = ?", (target,))}
@@ -418,9 +418,9 @@ class FeedbackStore:
 def mark_active(state: dict | None, latest_at: str | None) -> dict | None:
     """표시가 지금도 유효한가. 답변완료 · 프로젝트 완료는 표시한 뒤 새 메일이 오면 풀린다.
 
-    삭제는 새 메일이 와도 유지한다 (광고처럼 다시 볼 필요 없는 것을 숨기는 용도).
+    내 일 아님 · 삭제는 새 메일이 와도 유지한다. 사용자가 되돌릴 때만 해제한다.
     """
-    if not state or state["label"] == "deleted" or not latest_at or not state.get("ref_at"):
+    if not state or state["label"] in {"not_mine", "deleted"} or not latest_at or not state.get("ref_at"):
         return state
     try:
         newer = datetime.fromisoformat(latest_at) > datetime.fromisoformat(state["ref_at"])

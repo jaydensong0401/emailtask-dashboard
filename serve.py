@@ -2,7 +2,7 @@
 
 대시보드의 완료 · 제외 · 업무삭제 버튼 기록을 feedback.db 에 저장하고,
 차단됨 탭의 규칙 · 보호 도메인 변경을 mail.db 에 반영한다.
-자동 실행(setup_schedule.ps1 의 nwmail-server)이 로그인해 있는 동안 켜 두고,
+자동 실행(setup_schedule.ps1 의 Mailwork-server)이 로그인해 있는 동안 켜 두고,
 꺼지면 5분 안에 다시 켠다. 직접 켤 때:
 
   python serve.py
