@@ -78,6 +78,20 @@ def main() -> int:
             except FeedbackError:
                 check(f"거부: {label}", True)
 
+        hdr("[1-2] 프로젝트 색 저장소")
+        check("팔레트 칸 저장", fb.set_color("오로라 포럼", "s3") == "s3" and fb.colors()["오로라 포럼"] == "s3")
+        check("직접 고른 색은 소문자로", fb.set_color("오로라 포럼", "#A1B2C3") == "#a1b2c3")
+        check("빈 값은 지움 (자동 색으로)", fb.set_color("오로라 포럼", "") == "" and "오로라 포럼" not in fb.colors())
+        log = [r["color"] for r in fb.conn.execute("SELECT color FROM color_log ORDER BY id")]
+        check("바꾼 기록은 전부 남음", log == ["s3", "#a1b2c3", ""], str(log))
+        for label, args in (("팔레트 밖 칸", ("p", "s0")), ("10번 칸", ("p", "s10")), ("색 이름", ("p", "red")),
+                            ("짧은 hex", ("p", "#abc")), ("빈 이름", ("", "s1"))):
+            try:
+                fb.set_color(*args)
+                check(f"거부: {label}", False)
+            except FeedbackError:
+                check(f"거부: {label}", True)
+
         hdr("[2] 로컬 서버")
         page = Path(tmp) / "dashboard.html"
         page.write_text("<!doctype html><title>대시보드</title>", encoding="utf-8")
@@ -198,6 +212,26 @@ def main() -> int:
             status, _, raw = req("POST", "/api/due", {"task_id": TID, "due": ""})
             check("메일 기한으로 되돌리기", status == 200 and json.loads(raw)["state"] is None
                   and TID not in fb.dues())
+
+            hdr("[5] 프로젝트 색 (/api/color)")
+            body = {"project": "오로라 포럼", "color": "s4"}
+            check("색은 토큰 없으면 거부", req("POST", "/api/color", body, tok=None)[0] == 403)
+            check("색은 다른 Host 면 거부", req("POST", "/api/color", body, host="evil.example")[0] == 403)
+            status, _, raw = req("POST", "/api/color", body)
+            check("팔레트 칸 기록", status == 200 and json.loads(raw)["color"] == {"color": "s4"}, raw[:120])
+            status, _, raw = req("POST", "/api/color", dict(body, color="#203040"))
+            got = json.loads(raw)["color"]
+            check("직접 고른 색은 테마별로 밝기를 맞춘 값도 함께",
+                  status == 200 and got["color"] == "#203040" and got["light"].startswith("#")
+                  and got["dark"].startswith("#") and got["dark"] != "#203040", raw[:160])
+            status, _, raw = req("GET", "/api/feedback")
+            check("조회에 프로젝트 색이 함께", json.loads(raw)["colors"]["오로라 포럼"]["color"] == "#203040")
+            status, _, raw = req("POST", "/api/color", dict(body, color="purple"))
+            check("잘못된 색은 400 + 이유", status == 400 and "색" in json.loads(raw)["error"])
+            check("본문이 JSON 객체가 아니면 400", req("POST", "/api/color", b"[1]")[0] == 400)
+            status, _, raw = req("POST", "/api/color", dict(body, color=""))
+            check("자동 색으로 되돌리기", status == 200 and json.loads(raw)["color"] == {"color": ""}
+                  and "오로라 포럼" not in fb.colors())
 
             try:
                 make_server(port, page, fb).server_close()

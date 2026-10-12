@@ -221,6 +221,17 @@ def main() -> int:
             reverted = build_model(st, me=ME, today=TODAY, now=NOW, feedback=fb2)
             due_log = [r["due"] for r in fb2.conn.execute(
                 "SELECT due FROM due_log WHERE task_id = ? ORDER BY id", (ids["기획안 회신"],))]
+            # 프로젝트 색: 팔레트 칸 · 직접 고른 색 · 자동 색으로 되돌린 것
+            fb3 = FeedbackStore(Path(tmp) / "fb3.db")
+            fb3.set_color("오로라 스토어", "s9", now=NOW)
+            fb3.set_color("KX볼트링크", "#123456", now=NOW)
+            fb3.set_color("오로라 갤러리", "s2", now=NOW)
+            fb3.set_color("오로라 갤러리", "", now=NOW)
+            model_col = build_model(st, me=ME, today=TODAY, now=NOW, feedback=fb3)
+            out_col = render_html(model_col, server={"port": 8787, "token": fb3.token()})
+            col_log = [r["color"] for r in fb3.conn.execute(
+                "SELECT color FROM color_log WHERE project = ? ORDER BY id", ("오로라 갤러리",))]
+            fb3.close()
             # 지난달에만 오간 대화(최근 7일 창 밖)에 기한 있는 할 일이 남아 있는 경우
             put_extraction(st, "<old@t>", {
                 "project": "루미", "summary": "지난달 정산 건", "status": "진행중", "decisions": [],
@@ -304,12 +315,18 @@ def main() -> int:
         check("할 일은 개발 → 디자인 → 수정 → 기타 순",
               roles_seen == sorted(roles_seen, key=order.index) and len(roles_seen) == 5,
               str(roles_seen))
-        check("텍스트 앞에 역할 태그 (개발)", '<b class="rtag rt1">개발</b>API 연동 개발' in lumi)
-        check("텍스트 앞에 역할 태그 (디자인)", '<b class="rtag rt2">디자인</b>배너 시안 제작' in lumi)
-        check("수정은 세부 종류까지 태그", '<b class="rtag rt3">수정·디자인</b>문구 수정 반영' in lumi)
+        check("문구 앞 칸에 역할 태그 (개발) — 태그는 문구 밖, 문구 · 담당자 줄은 오른쪽 칸",
+              '<b class="rtag rt1">개발</b><div class="tb"><div class="th"><p class="t">API 연동 개발' in lumi)
+        check("문구 앞 칸에 역할 태그 (디자인)", '<b class="rtag rt2">디자인</b><div class="tb"><div class="th"><p class="t">배너 시안 제작' in lumi)
+        check("수정은 세부 종류까지 태그", '<b class="rtag rt3">수정·디자인</b><div class="tb"><div class="th"><p class="t">문구 수정 반영' in lumi)
         check("설정에 없는 수정 종류는 태그에서 뺌",
-              '<b class="rtag rt3">수정</b>잔여 회차 삭제' in lumi and "퍼블" not in lumi)
-        check("기획 업무는 '기타' 태그로 (누락 없음)", '<b class="rtag rt4">기타</b>일정표 정리' in lumi)
+              '<b class="rtag rt3">수정</b><div class="tb"><div class="th"><p class="t">잔여 회차 삭제' in lumi and "퍼블" not in lumi)
+        check("기획 업무는 '기타' 태그로 (누락 없음)", '<b class="rtag rt4">기타</b><div class="tb"><div class="th"><p class="t">일정표 정리' in lumi)
+        check("태그 칸은 같은 폭(가장 긴 태그 기준), 담당자 줄은 세로 가운데 · 완료한 일은 '기한 지남' 숨김",
+              ".tasks .task{display:grid;grid-template-columns:minmax(66px,max-content) minmax(0,1fr)" in out
+              and ".tasks .task .meta{align-items:center" in out
+              and '.task:not([data-state="open"]) .meta .dl{display:none}' in out
+              and '.task[data-state="done"] .st{background:var(--acc-bg)' in out)
         check("결정사항은 업무 묶음 아래 접힘", "런칭일 10월 1일 확정" in dec)
 
         hdr("[3-2] 결정사항 — 결정한 사람 기준 + 결정 일자")
@@ -326,11 +343,64 @@ def main() -> int:
         check("결정자 소속 표시 (메일 주소 기준)", '<span class="org">루미</span>' in kim)
         check("날짜가 없는 예전 추출은 '일자 미확인'",
               "일자 미확인" in section(dec, 'data-by=""', ('</details>',)))
-        check("요약 줄에 결정자별 건수",
-              "결정사항 4개 <span class=\"ds\">김개발 2 · 박외부 1 · 결정자 미기재 1</span>" in dec)
-        check("세부 프로젝트 색은 고객사 색 (오로라 = projects.json 순서 1번)",
-              'class="bar s1"' in lumi and 'class="bar s1"' in gv
-              and 'class="bar s2"' in section(out, 'data-project="KX볼트링크"', ('</details>',)))
+        check("요약 줄에 결정자 이름만 (사람별 건수는 펼치면 보임)",
+              "결정사항 4개 <span class=\"ds\">· 김개발 · 박외부 · 결정자 미기재</span>" in dec, dec[:200])
+        check("카드 안 접기 화살표는 '다른 담당자' 와 같은 작은 ▶ (기본 표시는 숨김)",
+              ':is(.decs,.gone,.pend,.excl,.rel,.handled)>summary::before{content:"▶"' in out
+              and ':is(.decs,.gone,.pend,.excl,.rel,.handled)>summary::-webkit-details-marker{display:none}' in out)
+        from nwmail.dashboard import MAX_SLOTS, name_slot, project_slots
+        from nwmail.projects import ProjectRules, load_rules as _rules
+        ps = project_slots(_rules())
+        by_client: dict[str, list[int]] = {}
+        for pname, pclient in _rules().client_of.items():
+            by_client.setdefault(pclient, []).append(ps[pname])
+        check("세부 프로젝트마다 다른 색 (projects.json 순서로 1번부터, 같은 고객사 안에서는 겹치지 않음)",
+              list(ps.values())[:MAX_SLOTS] == list(range(1, min(len(ps), MAX_SLOTS) + 1))
+              and all(len(set(v)) == len(v) for v in by_client.values() if len(v) <= MAX_SLOTS)
+              and f'class="bar s{ps["오로라 스토어"]}"' in lumi and f'class="bar s{ps["AX9 멤버십 테니스클럽"]}"' in gv
+              and ps["오로라 스토어"] != ps["AX9 멤버십 테니스클럽"]
+              and f'class="bar s{ps["KX볼트링크"]}"' in section(out, 'data-project="KX볼트링크"', ('</details>',)), str(ps))
+        fake = project_slots(ProjectRules(client_of={**{f"a{i}": "A" for i in range(11)}, "b0": "B", "b1": "B"}))
+        check("색이 모자라면 처음부터 다시, 다음 고객사는 이어지는 차례부터 (같은 고객사 안에서는 안 쓴 색 먼저)",
+              [fake[f"a{i}"] for i in range(11)] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 1, 2]
+              and (fake["b0"], fake["b1"]) == (3, 4), str(fake))
+        from nwmail.dashboard import extra_slots
+        ex = extra_slots({"": ["세이프원", "보안 공지", "재발송"]}, {}, {})
+        check("설정에 없는 프로젝트끼리 같은 묶음에서 겹치면 이름순으로 뒤의 것이 다음 색",
+              len(set(ex.values())) == 3 and ex["보안 공지"] == name_slot("보안 공지"), str(ex))
+        check("설정에 없는 프로젝트는 이름으로 고정 색 · 고객사 머리 네모는 회색 · 9번째 색은 두 테마 모두",
+              name_slot("빌노트") == name_slot("빌노트") and 1 <= name_slot("빌노트") <= MAX_SLOTS
+              and '<div class="client-h"><i class="sw s0" aria-hidden="true"></i>' in out
+              and "--s9:#a64ba0" in out and "--s9:#961dae" in out and ".s9{background:var(--s9)}" in out)
+        from nwmail.colors import BANDS, lightness, tone, tones
+        pc = {p["name"]: p for p in model_col["projects"]}
+        lumi_c = section(out_col, 'data-project="오로라 스토어"', ('</summary>',))
+        sk_c = section(out_col, 'data-project="KX볼트링크"', ('</summary>',))
+        lounge_c = section(out_col, 'data-project="오로라 갤러리"', ('</summary>',))
+        sk_t = tones("#123456")
+        check("고른 색: 팔레트 칸은 그 칸 · 자동 색 칸은 따로 들고 있음 (오늘 탭 카드 네모도 같은 색)",
+              pc["오로라 스토어"]["slot"] == 9 and pc["오로라 스토어"]["auto_slot"] == ps["오로라 스토어"]
+              and f'class="bar s9" data-color="s9" data-auto="{ps["오로라 스토어"]}"' in lumi_c
+              and 'style="--pc:var(--s9)"' in lumi_c
+              and '<i class="sw s9" aria-hidden="true"></i>오로라 스토어</span>' in out_col)
+        check("직접 고른 색은 10번 칸부터 · 테마별로 밝기를 맞춘 값으로 정의",
+              pc["KX볼트링크"]["slot"] == 10 and 'class="bar s10" data-color="#123456"' in sk_c
+              and f'--s10:{sk_t["light"]}' in out_col and f'--s10:{sk_t["dark"]}' in out_col
+              and ".s10{background:var(--s10)}" in out_col, str(sk_t))
+        check("자동 색으로 되돌리면 자동 색 · 바꾼 기록은 전부 남음",
+              pc["오로라 갤러리"]["slot"] == ps["오로라 갤러리"] and 'data-color=""' in lounge_c
+              and col_log == ["s2", ""], str(col_log))
+        check("색 막대는 색 고르는 버튼 + ⋮ 맨 위 '색 바꾸기…' (서버 주소가 아니거나 예전 서버면 잠금)",
+              'aria-label="오로라 스토어 색 바꾸기"' in lumi_c and "data-color-open>색 바꾸기…</button>" in lumi_c
+              and "function openColor(bar)" in out_col and "send('/api/color'" in out_col
+              and ".kb-btn,.proj-h>.bar," in out_col and "if(!j.colors)" in out_col)
+        check("고르는 동안 미리 보기도 같은 밝기 범위로 (페이지 설정에 범위 · 같은 계산)",
+              '"colorBands": {"light": [0.45, 0.75], "dark": [0.55, 0.75]}' in out_col
+              and "function tonesOf(hex)" in out_col and "var committed=cur;" in out_col)
+        check("직접 고른 색은 테마 밝기 범위 안으로 (범위 안이면 그대로)",
+              tone("#2a78d6", "light") == "#2a78d6"
+              and all(BANDS[mode][0] - 0.01 <= lightness(tone(h, mode)) <= BANDS[mode][1] + 0.01
+                      for h in ("#000000", "#ffffff", "#123456", "#fdfcf9", "#ff0000") for mode in BANDS))
 
         hdr("[3-1] 업무 묶음 · 담당자 소속")
         check("업무명에서 프로젝트 태그를 뗌",
@@ -354,7 +424,7 @@ def main() -> int:
         check("쓰지 않는 역할은 자리를 차지하지 않음",
               ext.count('<li class="task"') == 1 and 'class="empty"' not in ext)
         check("이전 역할(개발)로 저장된 추출도 태그와 함께 표시",
-              '<b class="rtag rt1">개발</b>신청 기한 연장 처리' in ext)
+              '<b class="rtag rt1">개발</b><div class="tb"><div class="th"><p class="t">신청 기한 연장 처리' in ext)
         check("묶음이 다른 업무는 따로", 'data-work="신청페이지 수정"' in nuri)
         check("오늘 탭 내 할 일에는 역할 태그 없음",
               'class="rtag' not in section(out, 'id="tab-today"', ('id="tab-projects"',)))
@@ -363,7 +433,7 @@ def main() -> int:
         check("추출 전 프로젝트는 '추출 대기' + 스레드 표시",
               "업무 추출 대기" in gen and "갤러리 티켓" in gen)
         misc = section(out, 'data-project="미분류"', ('<details class="proj"', '<section class="client"'))
-        check("알려지지 않은 프로젝트는 중립색", 'class="bar s0"' in misc)
+        check("미분류는 중립색 (회색)", 'class="bar s0"' in misc)
         check("할 일이 하나도 없는 업무는 빈 열 대신 한 줄",
               "남은 할 일 없음" in misc and 'class="tasks"' not in misc)
         a1_work = section(lumi, 'data-work="&lt;script&gt;alert(1)&lt;/script&gt; 기획 검토"',
@@ -382,49 +452,75 @@ def main() -> int:
         check("완료 · 되돌리기 때 업무 카드 완료 수도 고침",
               "querySelectorAll('.work [data-wdone]')" in out)
 
-        hdr("[4] 오늘 — 내 할 일")
-        today_tab = section(out, 'id="tab-today"', ('id="tab-projects"',))
-        me_tab = section(today_tab, '<ul class="acts" data-list="open">', ('</ul>',))
+        hdr("[4] 오늘 — 내 할 일 (대화 카드)")
+        today_tab = section(out, 'id="tab-today"', ('id="tab-wait"',))
+        wait_tab = section(out, 'id="tab-wait"', ('id="tab-projects"',))
+        me_tab = section(today_tab, '<div class="acts-open" data-list="open">', ('<p class="empty-state" data-empty="open"',))
         hint = section(today_tab, '<span class="infotip"', ('<div class="seg"',))
         check("보기 설명은 제목 옆 (!) 말풍선으로 (늘 보이는 설명 줄 없음)",
               '<h2>내가 해야 할 일</h2><span class="infotip" tabindex="0"' in today_tab
               and 'aria-describedby="acts-note"' in hint and 'role="tooltip" id="acts-note"' in hint
               and '<p class="note" id="acts-note">' not in today_tab)
-        check("말풍선 문구는 두 줄 (마감 순 · 메일 줄 안내 / 표시 기록 안내)",
-              "마감이 급한 순 · ✉ 메일 줄에 마우스를 올리면 제목이 보입니다.\n"
-              "완료·제외·업무삭제로 표시하면 목록에서 빠지고, 표시 기록은 업무 정리 기준을 다듬는 데 씁니다."
+        check("말풍선 문구는 두 줄 (묶는 방식 / 체크 · 제외 · 표시 기록 안내)",
+              "메일 대화별로 묶었습니다 · 기한 있는 일이 위, 기한 없는 일은 프로젝트별.\n"
+              "체크하면 완료, 줄에 마우스를 올리면 제외·업무삭제. 표시 기록은 업무 정리 기준을 다듬는 데 씁니다."
               in hint and ".infotip .tip{" in out and "white-space:pre-line" in out)
         order = [me_tab.find(t) for t in ("예산 승인", "기획안 회신", "참고 자료 확인")]
-        check("기한 지남 → 오늘 → 기한 없음 순으로 정렬",
-              -1 not in order and order == sorted(order), str(order))
-        check("상태는 아이콘 + 라벨 (색만으로 전달하지 않음)",
-              "▲</i>높음" in me_tab and "▽</i>낮음" in me_tab)
-        check("기한 라벨 표시 (오늘은 '오늘 마감')", "2일 지남" in me_tab and "오늘 마감" in me_tab)
-        check("직접 받은 메일의 할 일에 '직접' 표시", '<span class="chip">직접</span>' in me_tab)
-        check("프로젝트 칩에 세부 프로젝트 이름 + 고객사 색",
-              'class="sw s1" aria-hidden="true"></i>오로라 스토어' in me_tab)
-        heads = [me_tab.find(f'<span class="gl">{g}</span><b class="gn num">1</b>')
-                 for g in ("기한 지남", "오늘 마감", "기한 없음")]
-        check("마감 묶음 머리줄 (기한 지남 → 오늘 마감 → 기한 없음) + 건수",
-              -1 not in heads and heads == sorted(heads) and me_tab.count('class="grp ') == 3,
-              str(heads))
-        check("기한에 날짜 · 요일 함께", "2일 지남 · 9/9(수)" in me_tab and "오늘 마감 · 9/11(금)" in me_tab)
-        check("현황: 대화 요약 + 진행 상태",
-              '<dt>현황</dt><dd><span class="stt s-ing">진행중</span>기획안 검토 요청</dd>' in me_tab)
-        check("다른 담당자: 이름 있는 남의 업무만 마감순 2건 + 나머지 건수",
-              -1 < me_tab.find("API 연동 개발") < me_tab.find("문구 수정 반영")
-              and "배너 시안 제작" not in me_tab and "외 1건은 프로젝트 탭에서" in me_tab)
-        check("출처 메일 제목은 줄에 늘어놓지 않고, 올리면 뜨는 말풍선으로",
-              "」 대화에서" not in me_tab and me_tab.count('role="tooltip"') == 3
-              and '<span class="tip-l">메일 제목</span>[루미] &lt;script&gt;alert(1)&lt;/script&gt; '
-                  '기획 검토</span>' in me_tab)
-        check("말풍선은 키보드 포커스로도 열림 (tabindex + aria-describedby 가 같은 id)",
-              re.search(r'class="mail" tabindex="0" aria-describedby="(tip-[0-9a-f]+)">.*?id="\1"',
-                        me_tab) is not None)
-        check("메일 줄: 마지막 보낸 사람 · 시각 · 통수 · 답장 대기",
-              "김개발 · 09/10 10:00 · 메일 1통" in me_tab and "답장 대기 1일" in me_tab)
-        check("카드가 오가도 마감 묶음을 다시 다는 JS + 묶음 이름은 설정에서",
-              "function regroup()" in out and '"groups": {"overdue": "기한 지남"' in out)
+        check("같은 대화의 할 일 세 건은 대화 카드 한 장 안의 세 줄, 마감순 (기한 지남 → 오늘 → 기한 없음)",
+              me_tab.count('<article class="cv"') == 1 and me_tab.count('<li class="tk"') == 3
+              and -1 not in order and order == sorted(order), str(order))
+        due_zone = section(me_tab, '<section class="az" data-zone="due">', ('<section class="az" data-zone="rest"',))
+        check("기한 있는 할 일이 있는 대화는 '마감 있는 일' 칸 + 프로젝트 이름 · 색을 카드에 (기한 없는 칸은 숨김)",
+              '<article class="cv"' in due_zone and '<span>마감 있는 일</span><b class="az-n num">3</b>' in due_zone
+              and f'<span class="pj"><i class="sw s{ps["오로라 스토어"]}" aria-hidden="true"></i>오로라 스토어</span>'
+              in due_zone
+              and '<section class="az" data-zone="rest" hidden>' in me_tab)
+        check("머리 요약: 대화 수 · 할 일 수 · 기한 지남",
+              '대화 <b class="num" id="sum-cv">1</b>개 · 할 일 <b class="num" id="sum-n">3</b>건' in me_tab
+              and '기한 지남 <b class="num" id="sum-over-n">1</b>' in me_tab)
+        check("할 일 줄에 중요도 표시(▲) 없음",
+              'class="imp"' not in out and "중요도 높음" not in me_tab and "낮음" not in me_tab)
+        check("기한 라벨 + 날짜 · 요일 (오늘은 '오늘 마감')",
+              "2일 지남 · 9/9(수)" in me_tab and "오늘 마감 · 9/11(금)" in me_tab)
+        check("카드 제목은 메일 제목에서 앞머리 [태그] 를 걷어낸 것 (전체 제목은 title, 태그 글자는 이스케이프)",
+              '<h3 title="[루미] &lt;script&gt;alert(1)&lt;/script&gt; 기획 검토">'
+              '&lt;script&gt;alert(1)&lt;/script&gt; 기획 검토' in me_tab and "<script>alert" not in me_tab)
+        check("모두 직접 받은 대화라 '직접' 칩은 달지 않음", '<span class="chip">직접</span>' not in me_tab)
+        check("현황: 대화 요약 (두 줄까지, 넘치면 더보기) · 진행 상태 칩은 제목 옆",
+              '<p class="tx">기획안 검토 요청</p>' in me_tab
+              and re.search(r'<h3 [^>]*>[^<]*(?:<span class="(?:new|chip)">[^<]*</span>)*'
+                            r'<span class="stt s-ing">진행중</span></h3>', me_tab)
+              and '<button type="button" class="cv-more" aria-expanded="false">더보기</button>' in me_tab
+              and "-webkit-line-clamp:2" in out)
+        oth = section(me_tab, '<details class="cv-oth">', ("</details>",))
+        check("다른 담당자: 접어 두고 머리에 건수 · 이름, 펼치면 이름 있는 남의 업무만 마감순",
+              "다른 담당자 3건 · " in oth and -1 < oth.find("API 연동 개발") < oth.find("문구 수정 반영")
+              and "배너 시안 제작" not in me_tab, oth[:200])
+        check("메일 줄: 마지막 보낸 사람 · 시각 · 통수 · 답장 대기 (카드에 한 번, 시각은 묶음 안에서도 보임)",
+              me_tab.count('김개발<span class="cv-at"> · 09/10 10:00</span> · 메일 1통') == 1
+              and "답장 대기 1일" in me_tab)
+        check("마감 있는 대화 줄은 제목 위 날짜 칩 = 가장 급한 마감일 · 요일 · D-day · 기한 등급 (지난 마감은 빨강)",
+              '<div class="cv-b"><p class="cv-due"><span class="cv-dc lv-overdue"><b class="num">9/9 수</b> · 2일 지남'
+              '</span></p><div class="cv-h">' in due_zone
+              and 'data-last="2026-09-10"' in due_zone and "data-lv=" not in me_tab and 'class="cv-d ' not in out)
+        check("구역 머리 14px · 프로젝트 머리 17px · 패널 줄 사이는 1px 틈 · 묶음 안에서는 프로젝트 이름만 숨김",
+              ".az-h{display:flex;align-items:center;gap:8px;margin:0 0 12px;font-size:14px" in out
+              and ".apg-n{font-size:17px" in out and ".cvs{display:flex;flex-direction:column;gap:1px" in out
+              and ".apg .cv-m .pj{display:none}" in out and ".cv-at{display:none}" not in out)
+        check("한국어는 단어 단위로 줄바꿈 (할 일 · 제목 · 현황)",
+              out.count("word-break:keep-all") >= 4)
+        check("날짜 칩은 페이지도 같은 규칙으로 다시 그림 (칸을 옮기거나 표시할 때)",
+              "function paintDate(cv,live,rows)" in out and "paintDate(cv,live,rows);" in out
+              and "cv.querySelector('.cv-due')" in out)
+        from nwmail.dashboard import _cv_others
+        multi = _cv_others({"rows": [{"act": {"text": "내 일"}}]},
+                           {"others": [{"assignee": "문지호, 배건우", "org": "", "text": "피그마 기준 개발계 작업",
+                                        "deadline": {"level": "none", "sort": 99, "raw": "", "label": ""}}]})
+        check("다른 담당자: 여럿이 적힌 담당자는 사람마다 이름 ('문지호,' 처럼 쉼표가 남지 않음)",
+              "다른 담당자 1건 · 문지호 · 배건우" in multi and '<span class="nm">문지호 · 배건우</span>' in multi
+              and "문지호," not in multi, multi[:240])
+        check("다른 담당자: 이름 · 할 일 · 기한 칸을 줄마다 같은 선에 (subgrid)",
+              ".oth{display:grid;grid-column:1/-1;grid-template-columns:subgrid" in out)
         from nwmail.dashboard import _act_context, _same_work
         fake = {"me_names": ["홍길동"], "unanswered": [], "projects": [{"items": [{"roles": {"기타": [
             {"assignee": "홍길동 선임", "text": "내 일", "thread": {"key": "k"}},
@@ -441,15 +537,61 @@ def main() -> int:
                                  "사내 메신저 PC버전 계정 발급 진행 상황 확인 및 결과 회신"))
         check("기한 등급 속성 (오늘 마감 · 지난 마감 집계용)", 'data-level="overdue"' in me_tab
               and 'data-level="today"' in me_tab)
-        check("카드마다 완료 · 제외 · 업무삭제 · 되돌리기 버튼",
-              me_tab.count('data-act="done">완료</button>') == 3
-              and 'data-act="excluded">제외</button>' in me_tab
+        check("줄마다 체크 상자(완료) + 제외 · 업무삭제 · 되돌리기 (완료 버튼 대신 체크)",
+              me_tab.count('<input type="checkbox" class="ck"') == 3 and 'data-act="done"' not in me_tab
+              and me_tab.count('data-act="excluded">제외</button>') == 3
               and 'data-act="deleted">업무삭제</button>' in me_tab
               and 'data-act="open">되돌리기</button>' in me_tab)
+        check("체크 상자 이름은 그 줄 문구 (aria-labelledby 가 같은 id)",
+              re.search(r'class="ck" aria-labelledby="(tkt-[0-9a-f]+)">.*?id="\1"', me_tab) is not None)
         check("표시 기록 없으면 모두 남은 일 (완료 · 제외·삭제 목록은 비어 있음)",
               me_tab.count('data-state="open"') == 3 and 'id="cnt-done">0' in today_tab
               and 'id="cnt-dropped">0' in today_tab)
-        check("체크박스 대신 버튼 (내 할 일)", "<input" not in me_tab)
+        check("줄은 표시해도 그 자리에 두고, 묶음 건수 · 칸 이동은 페이지가 다시 맞춤",
+              "function layoutOpen()" in out and "function placeRow(li)" in out and "function arrange()" in out
+              and "function ensureRow(src)" in out and "function regroup()" not in out and '"groups":' not in out)
+        check("기한 없는 묶음은 접은 것을 기억 · '모두 접기'",
+              "nwmail.actFold" in out and '<button type="button" class="az-fold">모두 접기</button>' in me_tab)
+
+        hdr("[4-2] 오늘 — 대화 카드 묶기 · 같은 할 일 합치기")
+        from nwmail.dashboard import _act_title, _merge_same, _open_view
+
+        def fake(n, text, key, project, raw="", urgency="medium"):
+            d = deadline_info(raw, TODAY)
+            return {"id": f"{n:012x}", "text": text, "urgency": urgency, "project": project, "slot": 1,
+                    "kind": "me", "state": None, "deadline": {**d, "mail": raw, "manual": False},
+                    "thread": {"key": key, "subject": f"RE: [누리] 대화 {key}_202601001", "new": False,
+                               "direct": True, "summary": "", "snippet": "", "from": "", "count": 1,
+                               "last_at": "2026-09-10T01:00:00+00:00"}}
+        same = "스토어 PC·MO 홈 화면 오퍼링 배너 4개 카테고리 구성 기획안 전달"
+        fakes = [fake(1, same, "k1", "오로라 운영", "2026-09-20", "high"),
+                 fake(2, same.replace(" ", "  ", 2), "k2", "오로라 운영"),
+                 fake(3, "확인 후 회신", "k2", "오로라 운영"), fake(4, "확인 후 회신", "k3", "오로라 운영"),
+                 fake(5, same, "k4", "오로라 갤러리"), fake(6, "공고문 검토", "k5", "미분류"),
+                 fake(7, "답변 확인", "k6", "빌노트")]
+        merged = _merge_same(fakes)
+        check("같은 프로젝트 · 띄어쓰기만 다른 같은 문구는 한 줄로 (앞 줄에 붙임)",
+              len(merged) == 6 and [x["id"] for x in merged[0]["dups"]] == [fakes[1]["id"]])
+        check("짧은 문구('확인 후 회신') · 다른 프로젝트의 같은 문구는 합치지 않음",
+              sum(r["act"]["text"] == "확인 후 회신" for r in merged) == 2
+              and any(r["act"]["project"] == "오로라 갤러리" for r in merged))
+        view = _open_view(fakes, {})
+        rest = section(view, 'data-zone="rest"', ("</section>",))
+        groups = re.findall(r'<details class="apg" data-pg="([^"]+)" open>', view)
+        check("기한 없는 대화는 프로젝트 묶음 (처음 나온 순, 미분류는 맨 아래)",
+              groups == ["오로라 운영", "오로라 갤러리", "빌노트", "미분류"] and "k1" not in rest, str(groups))
+        check("묶음 머리에 대화 수 · 할 일 수 (합친 줄은 한 건)",
+              '오로라 운영</span><span class="apg-c num">대화 2 · 할 일 2</span>' in view)
+        check("기한 없는 대화 줄은 날짜 칩 없이 (빈 줄 · 최근 메일 시각은 메일 줄에) · 마감 있는 줄은 마감일 칩",
+              rest.count('<p class="cv-due"></p>') == rest.count('<article class="cv"') > 0
+              and '<span class="cv-at">' in rest
+              and '<b class="num">9/20 일</b> · ' in section(view, 'data-zone="due"', ("</section>",)))
+        check("합친 줄은 붙은 할 일 id 를 싣고, 다른 대화에도 있다고 알림",
+              f'data-dups="{fakes[1]["id"]}"' in view and "다른 대화 1곳의 같은 할 일도 함께 표시됩니다" in view)
+        check("머리 요약 할 일 수도 합친 줄 기준 (7건 → 6줄)", '<b class="num" id="sum-n">6</b>' in view)
+        check("카드 제목: 회신 표식 · 앞머리 태그 · 긴 관리번호 · '의 건' 을 뗌",
+              _act_title({"subject": "RE: [누리마케팅] AX9 신청페이지 배너 구성 변경 관련의 건_202601001"})
+              == "AX9 신청페이지 배너 구성 변경 관련")
 
         hdr("[4-3] 내 할 일 표시 기록 — 완료 · 제외 · 업무삭제")
         s_fb = model_fb["stats"]
@@ -463,6 +605,9 @@ def main() -> int:
               and '<span id="hl-me">1</span>' in out_fb and 'id="kpi-me">1</b>' in out_fb)
         check("완료 목록 (완료 날짜 표시)", "기획안 회신" in done_l
               and '<span class="st">09/11 완료</span>' in done_l, done_l[:200])
+        check("완료 카드 메일 줄 말풍선은 키보드 포커스로도 열림 (tabindex + aria-describedby 가 같은 id)",
+              re.search(r'class="mail" tabindex="0" aria-describedby="(tip-[0-9a-f]+)">.*?id="\1"',
+                        done_l) is not None)
         check("7일 창 밖 할 일도 표시할 때 문구로 완료 목록에 남음",
               "지난주 끝낸 일" in done_l
               and '<span class="tip-l">메일 제목</span>[NURI] 지난 건</span>' in done_l)
@@ -510,7 +655,7 @@ def main() -> int:
               lumi_fb[:400])
         check("업무 카드 머리 띠도 완료 / 전체 (제외 · 삭제는 빼고 셈)",
               'data-wdone>1</b>/<span data-wtotal>4</span>' in lumi_fb)
-        progs_fb = section(out_fb, '<div class="progs">', ('<div class="col-side">',))
+        progs_fb = section(out_fb, '<div class="progs">', ('id="progs-empty"',))
         check("진행 막대는 표시 기록으로 채움 (페이지 열기 전부터)",
               'data-total="6">2/6' in progs_fb and 'style="width:33%"' in progs_fb)
         done_l_fb = section(section(out_fb, 'id="tab-today"', ('id="tab-projects"',)),
@@ -524,17 +669,21 @@ def main() -> int:
               model_fb["stats"]["dropped"] == 2)
         templates = out_fb[out_fb.find("</main>"):out_fb.find('<div class="toast"')]
         tpl_ids = set(re.findall(r'<template id="act-([0-9a-f]{12})">', templates))
-        check("오늘 탭에 카드가 없는 프로젝트 할 일만 카드 틀을 탭 밖 <template> 에 그려 둠",
+        check("완료 · 제외 목록에 카드가 없는 할 일(남은 내 할 일 · 프로젝트 할 일)만 카드 틀을 탭 밖 <template> 에",
               tids["배너 시안 제작"] in tpl_ids and tids["API 연동 개발"] not in tpl_ids
-              and tids["일정표 정리"] not in tpl_ids and not tpl_ids & set(ids.values())
+              and tids["일정표 정리"] not in tpl_ids and ids["예산 승인"] in tpl_ids
+              and ids["기획안 회신"] not in tpl_ids and ids["참고 자료 확인"] not in tpl_ids
               and "<template" not in section(out_fb, 'id="tab-today"', ("</main>",)), str(len(tpl_ids)))
+        cv_ids = set(re.findall(r'<template id="cv-([0-9a-f]{12})">', templates))
+        check("완료 · 제외한 내 할 일은 되돌릴 때 쓸 대화 카드 틀 (7일 창 밖 기록 포함, 프로젝트 할 일은 없음)",
+              cv_ids == {ids["기획안 회신"], ids["참고 자료 확인"], "aaaaaaaaaaaa"}, str(len(cv_ids)))
         banner_tpl = section(templates, f'<template id="act-{tids["배너 시안 제작"]}">', ("</template>",))
         check("카드 틀은 오늘 탭 카드와 같은 모양 (역할 태그 · 버튼, 가려지는 현황 칸은 뺌)",
               f'<li class="act" data-task="{tids["배너 시안 제작"]}"' in banner_tpl
               and '<b class="rtag rt2">디자인</b>' in banner_tpl and 'data-act="done">완료' in banner_tpl
               and 'class="ctx"' not in banner_tpl, banner_tpl[:160])
         check("프로젝트 · 일정 탭에서 표시하면 틀을 복사해 오늘 탭 완료 · 제외 목록에 올리는 JS",
-              "function ensureCard(src)" in out_fb and "if(li.dataset.kind==='task')ensureCard(li);" in out_fb
+              "function ensureCard(src)" in out_fb and "ensureCard(li);ensureRow(li);" in out_fb
               and "parked[li.dataset.task]=li;li.remove();" in out_fb)
         check("오늘 완료는 할 일마다 한 번만 셈 (프로젝트 할 일은 오늘 · 프로젝트 탭 두 곳에 있음)",
               "doneIds[li.dataset.task]=1" in out_fb)
@@ -551,7 +700,7 @@ def main() -> int:
         check("헤드라인에 할 일 · 답 기다리는 메일 수",
               '처리할 일이 <em class="c-acc"><span id="hl-me">3</span>건</em>' in out
               and '답 기다리는 메일 <em class="c-warn"><span id="hl-wait">2</span>건</em>' in out)
-        check("날짜 + 요일", "MAIL DIGEST · 09/11 금" in out)
+        check("날짜 + 요일", '<time datetime="2026-09-11">09/11 금</time>' in out)
         check("오늘 마감 · 지난 마감 건수", s["due_today"] == 1 and s["overdue"] == 1
               and '오늘 마감 <span id="kpi-today">1</span>' in out
               and '지난 마감 <span id="kpi-over">1</span>' in out)
@@ -575,8 +724,8 @@ def main() -> int:
         late = next_full_run(datetime(2026, 9, 11, 9, 30, tzinfo=timezone.utc))   # 18:30 KST
         check("17시 이후면 다음 날 09:00", (late.day, late.hour) == (12, 9), str(late))
 
-        hdr("[4-2] 오늘 — 프로젝트 진행 · 결정사항")
-        progs = section(today_tab, '<div class="progs">', ('<div class="col-side">',))
+        hdr("[4-2] 오늘 — 프로젝트 진행 / 프로젝트 탭 — 최근 결정사항")
+        progs = section(today_tab, '<div class="progs">', ('id="progs-empty"',))
         check("프로젝트별 진행 줄 (전체 할 일 수)",
               'data-goto="오로라 스토어"' in progs and 'data-total="8">0/8' in progs)
         check("진행 줄마다 ⋮ 메뉴 (줄 이동 버튼과 따로)",
@@ -585,7 +734,13 @@ def main() -> int:
         check("표시 기록이 없으면 진행 막대는 비어 있음", 'style="width:0%"' in progs)
         check("할 일 없는 프로젝트는 '할 일 없음'", 'data-total="0">할 일 없음' in progs)
         check("할 일 없는 미분류는 진행 목록에서 뺌", 'data-goto="미분류"' not in progs)
-        rds = section(today_tab, '<ul class="rds">', ('</ul>',))
+        p_tab = section(out, 'id="tab-projects"', ('id="tab-schedule"',))
+        check("오늘 탭은 한 칸 — 답을 기다리는 메일 · 결정사항 없음",
+              'id="waits"' not in today_tab and 'class="rds"' not in today_tab and "col-side" not in out)
+        check("최근 결정사항은 프로젝트 탭 맨 위 (보기 버튼보다 위)",
+              -1 < p_tab.find('<section class="recent-decs"') < p_tab.find('<div class="ptools">')
+              and p_tab.count('<ul class="rds">') == 1 and "전체는 프로젝트 탭" not in out)
+        rds = section(p_tab, '<ul class="rds">', ('</ul>',))
         rd_order = [rds.find(t) for t in ("런칭일 10월 1일 확정", "시안 B안 채택", "예산 300만원 승인")]
         check("최근 결정사항은 날짜 최신순", -1 not in rd_order and rd_order == sorted(rd_order),
               str(rd_order))
@@ -595,13 +750,21 @@ def main() -> int:
         check("최근 결정사항은 날짜 없는 것까지 모두 (5개 이하)", rds.count('<li class="rd">') == 4)
 
         hdr("[5] 미응답 · 차단 · 신규")
-        un = section(today_tab, 'id="waits"', ('</ul>',))
+        check("답장 대기는 오늘 다음 탭, 숫자 = 미응답 수 (있으면 주황)",
+              out.find('id="b-tab-today"') < out.find('id="b-tab-wait"') < out.find('id="b-tab-projects"')
+              and f'<span class="cnt warn" data-tabcnt="tab-wait">{s["unanswered"]}<' in out
+              and s["unanswered"] == 2, str(s["unanswered"]))
+        check("머리 요약 '답장 대기' 의 '목록 보기 →' 는 답장 대기 탭으로",
+              '<a class="kpi-go" href="#wait">목록 보기 →</a>' in out)
+        check("'할 일 N건 →' 은 오늘 탭으로 바꾼 뒤 카드로 · 답변완료 때 탭 숫자도 고침",
+              "getElementById('b-tab-today');if(tt&&" in out and '[data-tabcnt="tab-wait"]' in out)
+        un = section(wait_tab, 'id="waits"', ('</ul>',))
         check("받는사람(TO)으로 받고 미회신 스레드 포함", "신청페이지 수정" in un)
         check("회신한 스레드는 제외", "갤러리 티켓" not in un)
         check("참조(CC)로만 받은 메일은 제외 (직접 수신이어도)",
               "참조로 받은 검토 요청" not in un
               and any(th["subject"] == "[루미] 참조로 받은 검토 요청" for th in model["direct_threads"]))
-        check("기준 표시", "받는사람(TO) 기준" in today_tab)
+        check("기준 표시", "받는사람(TO) 기준" in wait_tab and "최근 7일 메일 중" in wait_tab)
         from nwmail.dashboard import awaiting_to_me
         to_mail = {"is_mine": 0, "sent_at": "2026-09-10T01:00:00+00:00",
                    "to_addrs": json.dumps(["Other@x.com", ME.upper()])}
@@ -617,20 +780,48 @@ def main() -> int:
         check("최근 7일 전 메일은 대기 아님",
               awaiting_to_me({"mails": [dict(to_mail, sent_at="2026-09-01T00:00:00+00:00")],
                               "my_last_at": None}, ME, cut) is None)
-        check("대기 일수 표시", "3일 경과" in un, un[:300])
+        check("대기 일수는 왼쪽 배지 (숫자 + 일)",
+              '<span class="wage"><b class="num">3</b><small>일</small><span class="sr-only"> 경과</span>' in un,
+              un[:300])
+        check("배지 색 단계: 오늘 0 · 1일 1 · 2일 이상 2",
+              'data-waited="3" data-lv="2"' in un and 'data-waited="1" data-lv="1"' in un, un[:300])
         check("2일 넘게 기다린 메일은 강조", '<li class="wait old" ' in un)
-        check("메일마다 ⋮ 메뉴 (답변완료 · 삭제)",
-              un.count('class="kb-btn"') == 2 and 'data-wmark="answered">답변완료' in un
-              and 'data-wmark="deleted">삭제' in un)
-        check("3건 이하면 '나머지 보기' 숨김",
-              'data-more="waits" aria-expanded="false" hidden>' in today_tab)
+        check("보낸 사람 이름 + 소속(메일 주소 기준) · 프로젝트",
+              '<b class="wn" title="김개발 매니저">김개발 매니저</b><span class="wo">루미 · 오로라 스토어</span>' in un)
+        check("요약은 두 줄까지, 마우스를 올리면 받은 메일 본문 (이스케이프)",
+              'data-preview-label="받은 메일">기획안 검토 요청</p>' in un
+              and "onerror=alert(2)&gt;" in un and "<img" not in un)
+        check("받은 시각", "09/10 10:00 받음" in un)
+        check("같은 대화에 남은 내 할 일이 있으면 '할 일 N건 →' (없으면 숨김)",
+              'class="wgo">할 일 <b class="num">3</b>건 →' in un
+              and 'class="wgo" hidden>할 일 <b class="num">0</b>건 →' in un)
+        check("답변완료는 줄에 바로 보이는 버튼, 삭제는 줄 맨 끝 ⋮ 메뉴",
+              un.count('data-wmark="answered">답변완료') == 2
+              and un.count('class="kb-btn"') == 2 and 'data-wmark="deleted">삭제' in un
+              and 'role="menuitem" data-wmark="answered"' not in un
+              and un.count('data-wmark="open">되돌리기</button></div><span class="kb">') == 2)
+        check("6건 이하면 '나머지 보기' 숨김",
+              'data-more="waits" aria-expanded="false" hidden>' in wait_tab)
         check("표시한 메일이 없으면 '답변완료·삭제한 메일' 숨김",
-              '<details class="handled" id="handled" hidden>' in today_tab)
-        from nwmail.dashboard import _waiting
-        many = dict(model, unanswered=model["unanswered"] * 3)
+              '<details class="handled" id="handled" hidden>' in wait_tab)
+        from nwmail.dashboard import _waiting, sender_parts
+        many = dict(model, unanswered=model["unanswered"] * 4)
         w = _waiting(many)
-        check("4건 이상이면 3건만 펼치고 나머지는 접음",
-              len(re.findall(r'<li class="wait[^>]* hidden>', w)) == 3 and "나머지 3건 보기" in w)
+        check("7건 이상이면 6건만 펼치고 나머지는 접음",
+              len(re.findall(r'<li class="wait[^>]* hidden>', w)) == 2 and "나머지 2건 보기" in w)
+        for raw, email, want in (
+                ("서나윤 대리_누리마케팅", "cl@nurimktg.co.example", ("서나윤 대리", "누리")),
+                ("루미 강민호 이사", "k@lumi.example", ("강민호 이사", "루미")),
+                ("유나래 Narae Yoo 책임매니저 오로라고객경험팀", "s@aurora.example", ("유나래 책임매니저", "오로라")),
+                (" 인증확인시스템 ", "v@certcheck.or.example", ("인증확인시스템", "")),
+                ("", "b@lumi.example", ("b@lumi.example", "루미"))):
+            check(f"보낸 사람 나누기: {raw or email!r}", sender_parts(raw, email) == want,
+                  str(sender_parts(raw, email)))
+        from nwmail.dashboard import _wait
+        gen = dict(model["unanswered"][0], name="유나래 책임매니저", org="오로라",
+                   thread=dict(model["unanswered"][0]["thread"], project="오로라 운영(기타)"))
+        check("소속이 프로젝트 이름에 들어 있으면 소속은 뺌",
+              '<span class="wo">오로라 운영(기타)</span>' in _wait(gen))
         bl = section(out, 'id="tab-blocked"', ("</main>",))
         check("차단 규칙 표에 패턴과 차단 수", "[광고]" in bl and "세미나" in bl)
         check("차단 메일은 프로젝트 탭에서 제외",
@@ -660,18 +851,20 @@ def main() -> int:
         check("ID 는 내용 기반", task_id("<a1@t>", "me", "기획안 회신") in ids1)
         check("예전 브라우저 체크는 서버로 옮기는 코드만 남김",
               "nwmail.done.v1" in out and "input[data-task]" not in out)
-        check("서버 주소가 아니면 프로젝트 할 일 버튼도 잠금",
-              ".act [data-act],.task [data-act]" in out)
+        check("서버 주소가 아니면 프로젝트 할 일 버튼 · 체크 상자도 잠금",
+              ".act [data-act],.tk [data-act],.tk .ck,.task [data-act]" in out)
         rows = re.findall(r'<li class="task[^>]*data-text="([^"]*)"[^>]*>(.*?)</li>', out, re.S)
-        check("프로젝트 할 일 스냅샷 문구에 역할 태그가 섞이지 않음",
-              bool(rows) and all(f"</b>{t}</p>" in li for t, li in rows), f"{len(rows)}건")
+        check("프로젝트 할 일 스냅샷 문구에 역할 태그가 섞이지 않음 (태그는 문구 밖 칸)",
+              bool(rows) and all(f'<p class="t">{t}</p>' in li and "rtag" not in li[li.find('<p class="t">'):]
+                                 for t, li in rows), f"{len(rows)}건")
         check("표시를 보낼 때 data-text 를 먼저 쓴다", "li.dataset.text||" in out)
 
         hdr("[6-1] ⋮ 메뉴 표시 — 답변완료 · 프로젝트 완료 · 삭제")
         s_mk = model_mk["stats"]
-        t_mk = section(out_mk, 'id="tab-today"', ('id="tab-projects"',))
-        waits_mk = section(t_mk, 'id="waits"', ('</ul>',))
-        handled_mk = section(t_mk, 'id="handled"', ('</details>',))
+        t_mk = section(out_mk, 'id="tab-today"', ('id="tab-wait"',))
+        w_mk = section(out_mk, 'id="tab-wait"', ('id="tab-projects"',))
+        waits_mk = section(w_mk, 'id="waits"', ('</ul>',))
+        handled_mk = section(w_mk, 'id="handled"', ('</details>',))
         check("답변완료한 메일은 기다리는 목록에서 빠지고 아래 목록으로",
               "신청페이지 수정" not in waits_mk and "신청페이지 수정" in handled_mk
               and 'data-wstate="answered"' in handled_mk
@@ -680,9 +873,10 @@ def main() -> int:
               any(u["thread"]["key"] == "<a1@t>" for u in model_mk["unanswered"]))
         check("미응답 숫자 · 머리글도 줄어듦",
               s_mk["unanswered"] == 1 and 'id="hl-wait">1<' in out_mk and 'id="kpi-wait">1<' in out_mk
-              and 'id="wait-cnt">1<' in out_mk and 'id="handled-cnt">1<' in out_mk)
+              and 'id="wait-cnt">1<' in out_mk and 'id="handled-cnt">1<' in out_mk
+              and 'data-tabcnt="tab-wait">1<' in out_mk)
         check("답변완료 목록은 되돌리기 버튼", 'data-wmark="open">되돌리기' in handled_mk
-              and '<details class="handled" id="handled">' in t_mk)
+              and '<details class="handled" id="handled">' in w_mk)
         pj = {p["name"]: p for p in model_mk["projects"]}
         check("프로젝트 완료 → 완료 보기로", pj["KX볼트링크"]["pstate"] == "done"
               and 'data-project="KX볼트링크" data-pstate="done"' in out_mk)
@@ -698,7 +892,7 @@ def main() -> int:
               and f'data-tabcnt="tab-projects">{s_mk["projects_open"] + s_mk["projects_delayed"]}<' in out_mk)
         check("진행 프로젝트 숫자에서 완료 · 삭제는 뺌",
               s_mk["named_projects"] == s["named_projects"] - 1)
-        progs_mk = section(t_mk, '<div class="progs">', ('<div class="col-side">',))
+        progs_mk = section(t_mk, '<div class="progs">', ('id="progs-empty"',))
         check("프로젝트별 진행에서 완료 프로젝트 줄은 숨김",
               re.search(r'class="prow" data-goto="KX볼트링크"[^>]* hidden>', progs_mk) is not None)
         client_sk = section(out_mk, '<section class="client" data-client="KX볼트링크"', ('>',))
@@ -707,8 +901,8 @@ def main() -> int:
               any(u["thread"]["key"] == "<t2@t>" for u in reopened["unanswered"])
               and mark_log == ["answered", "deleted", "open"], str(mark_log))
         check("페이지 설정에 표시 이름 (답변완료 · 완료 · 삭제)",
-              '"answered": "답변완료"' in out_mk and '"waitPreview": 3' in out_mk)
-        check("서버 주소가 아니면 ⋮ 메뉴도 잠금", ".kb-btn,.wfoot [data-wmark]" in out)
+              '"answered": "답변완료"' in out_mk and '"waitPreview": 6' in out_mk)
+        check("서버 주소가 아니면 ⋮ 메뉴 · 색 막대 · 답변완료도 잠금", ".kb-btn,.proj-h>.bar,.wx [data-wmark]" in out)
 
         hdr("[7] 테마 · 접근성")
         check("라이트 기본 + 다크 두 경로(OS 설정 / 토글)",
@@ -757,7 +951,8 @@ def main() -> int:
         check("달력은 줄의 날짜 · 종류 · 색으로 그림",
               'data-deadline="2026-09-13"' in head(rows["API 연동 개발"])
               and 'data-kind="task"' in head(rows["API 연동 개발"])
-              and 'data-slot="1"' in head(rows["기획안 회신"]))
+              and f'data-slot="{ps[re.search(r'data-pname="([^"]*)"', head(rows["기획안 회신"])).group(1)]}"'
+              in head(rows["기획안 회신"]))
         check("처음엔 오늘 마감인 내 할 일만 보임 (프로젝트 할 일은 보기를 바꿔야)",
               not head(rows["기획안 회신"]).endswith(" hidden")
               and head(rows["예산 승인"]).endswith(" hidden")
@@ -800,10 +995,12 @@ def main() -> int:
                s_due["sched_badge"]) == (1, 0, 1, 0, 2) and 'data-tabcnt="tab-schedule">2<' in out_due,
               str((s_due["sched_overdue"], s_due["sched_today"], s_due["sched_week"], s_due["sched_none"])))
         open_due = section(section(out_due, 'id="tab-today"', ('id="tab-projects"',)),
-                           'data-list="open"', ('</ul>',))
-        check("오늘 탭 마감 묶음도 같은 기한 (3일 안에 마감 · 그 이후)",
-              '<span class="gl">3일 안에 마감</span>' in open_due and "D-3 · 9/14(월)" in open_due
-              and "D-9 · 9/20(일)" in open_due and "오늘 마감" not in open_due)
+                           'data-list="open"', ('<p class="empty-state" data-empty="open"',))
+        order_due = [open_due.find(t) for t in ("예산 승인", "참고 자료 확인", "기획안 회신")]
+        check("오늘 탭 줄도 같은 기한 · 그 마감순 (3일 안 · 그 이후)",
+              'class="due lv-soon">D-3 · 9/14(월)' in open_due and "D-9 · 9/20(일)" in open_due
+              and "오늘 마감" not in open_due and -1 not in order_due and order_due == sorted(order_due),
+              str(order_due))
         check("숫자 칸도 같은 기한 (오늘 마감 0 · 지난 마감 1)",
               s_due["due_today"] == 0 and s_due["overdue"] == 1 and 'id="kpi-today">0<' in out_due)
         banner = section(out_due, 'data-project="오로라 스토어"', ('<details class="proj"', '<section class="client"'))
@@ -1101,6 +1298,26 @@ def main() -> int:
     check("맨 위 전달 헤더 블록 제거", not s2.startswith("From"), s2)
     check("휴대폰 번호 마스킹", "010-1234-5678" not in s2 and "[전화번호]" in s2)
     check("Original Message 이후 제거", "옛날 내용" not in s2)
+
+    from nwmail.mailtext import preview_text
+    p1 = preview_text("안녕하세요, 주임님.누리마케팅 서나윤 대리입니다.링크 공유 감사합니다.감사합니다."
+                      "VIP사업부 대리│ 서나윤T070-4010-2507│E-mail : cl.kim@nurimktg.co.example"
+                      "----- Original Message -----From : 홍길동 <gdhong@lumi.example>To : 서나윤 "
+                      "<cl.kim@nurimktg.co.example>Subject : 링크 전달<mailplughead></mailplughtml>이전 내용")
+    check("전체 보기: 줄바꿈 없이 온 본문도 인용(Original Message · From · To) 제거",
+          "From" not in p1 and "To :" not in p1 and "이전 내용" not in p1, p1)
+    check("전체 보기: 문장 끝에서 줄을 나눔",
+          p1.startswith("안녕하세요, 주임님.\n누리마케팅 서나윤 대리입니다.\n"), p1)
+    check("전체 보기: 맺음 인사 뒤 연락처 서명 제거",
+          p1.endswith("감사합니다.") and "VIP사업부" not in p1 and "nurimktg" not in p1, p1)
+    p2 = preview_text("From: a@b.com\nTo: c@d.com\n\n검토 부탁드립니다.\n\n- 개발계 (링크)\n- 운영계 (링크)\n"
+                      "<xxmailplughead></xxmailplughtml>\n원본")
+    check("전체 보기: 줄바꿈 유지, 메일플러그 태그 없음",
+          p2 == "검토 부탁드립니다.\n\n- 개발계 (링크)\n- 운영계 (링크)\n원본", p2)
+    p3 = preview_text("지점 현황 공유드립니다.\n" + "-" * 40 + "\n[서울] 금천점, 송파점\n[경기] 기흥점")
+    check("전체 보기: 구분선 아래가 본문(목록)이면 자르지 않음", p3.endswith("[경기] 기흥점"), p3)
+    check("전체 보기: 주소·소수는 나누지 않음",
+          preview_text("www.nurimktg.co.example 에서 v1.5 확인") == "www.nurimktg.co.example 에서 v1.5 확인")
 
     print(f"\n{'=' * 68}\n결과: {ok}/{total} PASS\n{'=' * 68}")
     return 0 if ok == total else 1

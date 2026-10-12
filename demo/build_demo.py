@@ -27,7 +27,7 @@ from nwmail.dashboard import (USAGE_PAGE, build_model, esc, render_html,  # noqa
                               render_usage_html, task_id)
 from nwmail.feedback import MARKS, FeedbackStore                    # noqa: E402
 from nwmail.filters import add_filter, add_protected, reapply       # noqa: E402
-from nwmail.server import _due_json, _mark_json                     # noqa: E402
+from nwmail.server import _color_json, _due_json, _mark_json        # noqa: E402
 from nwmail.store import Store                                      # noqa: E402
 
 HERE = Path(__file__).resolve().parent
@@ -475,6 +475,7 @@ def seed() -> None:
                 snap = {"text": text, "kind": kind, "thread_key": key[k], "subject": subject[k], **extra}
                 fb.apply(task_id(key[k], kind, text), label, reason, snapshot=snap,
                          now=when + timedelta(minutes=10 * i))
+            fb.set_color("하늘투어", "#7b5cd6", now=when)     # 색 막대에서 직접 고른 색 예시
             fb.set_due(task_id(key["haneul-deal"], "me", "입점 수수료 조건 내부 검토"), "2026-09-23",
                        {"text": "입점 수수료 조건 내부 검토", "kind": "me", "deadline": "2026-09-24",
                         "project": "하늘투어", "subject": subject["haneul-deal"]}, now=when)
@@ -490,6 +491,7 @@ def feedback_seed(fb: FeedbackStore) -> dict:
     states = {k: {"label": v["label"], "reason": v["reason"], "labeled_at": v["labeled_at"]}
               for k, v in fb.states().items()}
     return {"states": states, "dues": {k: _due_json(v) for k, v in fb.dues().items()},
+            "colors": {k: _color_json(v) for k, v in fb.colors().items()},
             **{f"{t}s": {k: _mark_json(v) for k, v in fb.marks(t).items()} for t in MARKS}}
 
 

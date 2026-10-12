@@ -11,20 +11,24 @@ from __future__ import annotations
 
 import html
 import json
+import re
+import zlib
 from datetime import date, datetime, timedelta, timezone
 from email.utils import getaddresses
+from pathlib import Path
 from urllib.parse import quote
 
 from .client import INBOX_NAMES
+from .colors import BANDS, tones
 from .extract import PROMPT_VERSION, load_all, render_thread
 from .feedback import (
     DUE_YEARS, EXTRACT_EXCLUSION_REASONS, LABELS, MARKS, REASONS,
     FeedbackError, FeedbackStore, excludes_analysis, mark_active,
 )
 from .filters import block_overview, load_filters, sender_domain
-from .mailtext import snippet  # noqa: F401 (테스트에서 사용)
+from .mailtext import preview_text, snippet
 from .projects import (
-    canonical_org, classify, load_rules, normalize_role, people_orgs, person_key,
+    canonical_org, classify, load_rules, normalize_role, org_for_email, people_orgs, person_key,
     skip_extract, title_key, work_title,
 )
 from .store import Store, window_start
@@ -33,34 +37,44 @@ from .usage import ERROR_KINDS
 from .usage import summary as usage_summary
 
 USAGE_PAGE = "usage.html"               # 토큰 사용 현황 페이지 (대시보드 옆에 같이 놓인다)
-# 파비콘: 봉투(메일) + 체크 배지(업무 정리 끝). 색은 대시보드 강조색·주의색 그대로 쓴다.
-# 바탕이 츠에 타일을 깔아 브라우저 탭이 밝든 어둡든 같이 보이고, 파일 하나로 열어도 나오도록 data URI 로 심는다.
+# Mailwork 시안 A의 m 심볼: 머리말과 파비콘이 같은 벡터 도형을 사용한다.
+MAILWORK_MARK = (
+    '<path d="M0 70 C0 28 28 0 70 0 C91 0 108 8 120 22 '
+    'C132 8 149 0 170 0 C212 0 240 28 240 70 V116 Q240 120 236 120 '
+    'H194 Q190 120 190 116 V72.5 C190 57.5 182.5 50 167.5 50 '
+    'C152.5 50 145 57.5 145 72.5 V206 Q145 210 141 210 H99 Q95 210 95 206 '
+    'V72.5 C95 57.5 87.5 50 72.5 50 C57.5 50 50 57.5 50 72.5 '
+    'V206 Q50 210 46 210 H4 Q0 210 0 206 Z"/>'
+    '<rect x="190" y="160" width="50" height="50" rx="4"/>')
+
+# 검정 타일 + 흰 심볼. data URI로 넣어 파일로 직접 열 때도 표시한다.
 FAVICON = (
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
-    '<rect width="32" height="32" rx="7.5" fill="#1f6f6a"/>'
-    '<rect x="3.5" y="8" width="20" height="14.5" rx="2.5" fill="#fdfcf9"/>'
-    '<path d="M4.6 9.6 13.5 16l8.9-6.4" fill="none" stroke="#1f6f6a" stroke-width="2.4"'
-    ' stroke-linejoin="round" stroke-linecap="round"/>'
-    '<circle cx="23.5" cy="23.5" r="8.5" fill="#1f6f6a"/>'
-    '<circle cx="23.5" cy="23.5" r="6.8" fill="#eb6834"/>'
-    '<path d="m20.4 23.7 2.2 2.2 4.1-4.6" fill="none" stroke="#fff" stroke-width="2.6"'
-    ' stroke-linecap="round" stroke-linejoin="round"/></svg>')
+    '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"'
+    ' role="img" aria-labelledby="title"><title id="title">Mailwork favicon</title>'
+    '<rect width="64" height="64" rx="12.0000" fill="#111111"/>'
+    '<g fill="#FFFFFF" transform="translate(8.0000 11.0000) scale(0.20000000)">'
+    f'{MAILWORK_MARK}</g></svg>')
+
+# 인라인 SVG의 currentColor가 라이트 · 다크 테마의 글자색을 따라간다.
+MAILWORK_LOGO = (Path(__file__).with_name("assets") / "mailwork-logo.svg").read_text(encoding="utf-8").strip()
 
 
 def _head(title: str) -> str:
     """두 페이지가 같이 쓰는 <head>. 아이콘은 파일 하나로 열어도 보이게 data URI."""
     return ('<!doctype html><html lang="ko"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1">'
-            f'<link rel="icon" href="data:image/svg+xml,{quote(FAVICON, safe="")}">'
+            f'<link rel="icon" href="data:image/svg+xml,{quote(FAVICON, safe="")}"'
+            ' type="image/svg+xml" sizes="any">'
             f'<title>{esc(title)}</title><style>{CSS}</style></head>')
 
 
 KST = timezone(timedelta(hours=9))     # 한국은 서머타임이 없어 고정 오프셋으로 충분
 UNCLASSIFIED = "미분류"
 OTHER_CLIENT = "기타"                   # 설정에 없는 고객사(태그로만 알려진 프로젝트 · 미분류)의 묶음 이름
-MAX_SLOTS = 8                           # 범주형 색은 8개까지, 넘치면 중립 회색
+MAX_SLOTS = 9                           # 프로젝트 색 9개 (검증된 범주형 8색 + 자주색 1색). 모자라면 처음부터 다시
+COLOR_NAMES = ("회색", "파랑", "주황", "청록", "노랑", "분홍", "초록", "보라", "빨강", "자주")   # 0~9번 칸 (색 고르는 창)
 FULL_RUN_TIMES = ("09:00", "13:00", "17:00")   # setup_schedule.ps1 의 nwmail-full 시각과 맞춘다
-WAIT_PREVIEW = 3                        # 답을 기다리는 메일은 이만큼만 펼쳐 둔다
+WAIT_PREVIEW = 6                        # 답을 기다리는 메일은 이만큼만 펼쳐 둔다
 RECENT_DECISIONS = 5
 LABELED_DAYS = 30                       # 완료 · 제외 목록은 최근 이만큼만
 WEEKDAYS = "월화수목금토일"
@@ -193,6 +207,21 @@ def awaiting_to_me(thread: dict, me: str, cutoff: str) -> str | None:
     return asked if asked and (mine is None or asked > mine) else None
 
 
+def sender_parts(name: str | None, email: str | None, rules=None) -> tuple[str, str]:
+    """보낸 사람 표시를 이름(직함)과 소속으로 나눈다. 소속은 메일 주소로 확인되면 그걸 쓴다.
+
+    '서나윤 대리_누리마케팅' → ('서나윤 대리', '누리'), '루미 강민호 이사' → ('강민호 이사', '루미'),
+    '유나래 Narae Yoo 책임매니저 오로라고객경험팀' → ('유나래 책임매니저', '오로라').
+    """
+    raw = " ".join((name or "").split())
+    head, _, tail = raw.partition("_")
+    org = org_for_email(email, rules) or canonical_org(tail, rules)
+    words = [w for w in head.split() if not (org and org.lower() in w.lower())]
+    hangul = [w for w in words if re.search(r"[가-힣]", w)]
+    words = hangul or words                     # 한글 이름이 있으면 'Narae Yoo' 같은 영문 병기는 뺀다
+    return " ".join(words) or head or (email or ""), org
+
+
 def latest(*values) -> str | None:
     dts = [(d, v) for v in values if (d := parse_dt(v))]
     return max(dts)[1] if dts else None
@@ -264,9 +293,55 @@ def project_progress(items: list[dict], ready: bool, mark: dict | None) -> dict:
     return {"state": state, "total": total, "open": len(remaining)}
 
 
-def client_slots(rules) -> dict[str, int]:
-    """색은 고객사를 따라간다 (세부 프로젝트는 고객사 색). projects.json 순서로 고정 배정한다."""
-    return {c: i + 1 for i, c in enumerate(rules.clients[:MAX_SLOTS])}
+def project_slots(rules) -> dict[str, int]:
+    """색은 세부 프로젝트마다. projects.json 순서(고객사 → 세부 프로젝트 → 기본 프로젝트)대로 1번 색부터
+    차례로 주고, 색이 모자라 처음부터 다시 쓸 때도 같은 고객사 안에서는 아직 안 쓴 색을 먼저 고른다.
+
+    설정 순서만 보므로 최근 7일에 어떤 프로젝트가 보이든 색이 바뀌지 않는다 (보이는 수가 달라도 다시 칠하지 않음).
+    """
+    slots: dict[str, int] = {}
+    used: dict[str, set[int]] = {}
+    turn = 0                                # 다음 프로젝트가 받을 색 차례 (0부터)
+    for name, client in rules.client_of.items():
+        taken = used.setdefault(client, set())
+        order = [(turn + k) % MAX_SLOTS + 1 for k in range(MAX_SLOTS)]
+        slot = next((s for s in order if s not in taken), order[0])
+        slots[name] = slot
+        taken.add(slot)
+        turn = slot % MAX_SLOTS
+    return slots
+
+
+def name_slot(name: str) -> int:
+    """설정에 없는 프로젝트(제목 태그 · 메일 도메인으로 알게 된 곳)는 이름으로 정해지는 고정 색."""
+    return zlib.crc32(name.encode("utf-8")) % MAX_SLOTS + 1
+
+
+def extra_slots(extra: dict[str, list[str]], slots: dict[str, int], client_of: dict[str, str]) -> dict[str, int]:
+    """설정에 없는 프로젝트의 색 (고객사 → 이름들). 이름으로 정해지는 색(name_slot)을 먼저 쓰고, 같은 고객사
+    묶음에서 이미 쓴 색이면 이름순으로 뒤의 것이 아직 안 쓴 다음 색을 쓴다. 보이는 프로젝트가 같으면 늘 같은 색."""
+    out: dict[str, int] = {}
+    for client, names in extra.items():
+        taken = {s for n, s in slots.items() if client_of.get(n) == client}
+        for name in sorted(names):
+            want = name_slot(name)
+            order = [(want - 1 + k) % MAX_SLOTS + 1 for k in range(MAX_SLOTS)]
+            out[name] = next((s for s in order if s not in taken), want)
+            taken.add(out[name])
+    return out
+
+
+def picked_slots(auto: dict[str, int], picked: dict[str, str]) -> tuple[dict[str, int], dict[int, str]]:
+    """사용자가 고른 색(feedback.db)을 자동 색 위에 얹는다. s1~s9 는 그 팔레트 칸, 직접 고른 #rrggbb 는
+    10번 칸부터 하나씩 새로 만든다 (페이지가 그 칸의 색을 테마별로 정의). 돌려주는 값: (프로젝트 → 칸, 새 칸 → 색)."""
+    slots, custom = dict(auto), {}
+    for name, color in sorted(picked.items()):
+        if color.startswith("s") and color[1:].isdigit() and 1 <= int(color[1:]) <= MAX_SLOTS:
+            slots[name] = int(color[1:])
+        elif color.startswith("#") and len(color) == 7:
+            custom[MAX_SLOTS + 1 + len(custom)] = color
+            slots[name] = MAX_SLOTS + len(custom)
+    return slots, custom
 
 
 def _received_at(mails: list[dict]) -> datetime | None:
@@ -405,7 +480,9 @@ def build_model(store: Store, me: str, today: date | None = None,
     today = today or now.astimezone(KST).date()
     cutoff = window_start(window_days, now).isoformat()
     rules = load_rules()
-    slots = client_slots(rules)
+    auto = project_slots(rules)                 # 자동 색 (설정 순서) — 색 고르는 창의 '자동 색으로'
+    picked = feedback.colors() if feedback else {}
+    slots, custom = picked_slots(auto, picked)
     extractions = load_all(store)
     identity_threads = store.threads(window_days=window_days, now=now, keys=list(extractions)) if extractions else []
     links = task_links(extractions, [me, *_my_names(identity_threads)])
@@ -441,12 +518,17 @@ def build_model(store: Store, me: str, today: date | None = None,
     extracted = new_threads = excluded = window_mails = 0
 
     def slot_of(project: str) -> int:
-        """예전 표시 기록의 프로젝트 이름('루미' 등)도 지금 규칙의 고객사 색으로."""
-        return slots.get(rules.client_of.get(rules.resolve(project) or project, ""), 0)
+        """프로젝트 색 (고른 색이 있으면 그 색). 미분류는 회색(0), 설정에 없는 이름은 이름으로 정해지는 색.
+        예전 표시 기록의 이름('루미' 등)은 지금 규칙의 세부 프로젝트로 맞춰 본다."""
+        if project in slots:
+            return slots[project]
+        if not project or project == UNCLASSIFIED:
+            return 0
+        return slots.get(rules.resolve(project)) or name_slot(project)
 
     def project(name: str, client: str) -> dict:
         if name not in projects:
-            projects[name] = {"name": name, "client": client, "slot": slots.get(client, 0),
+            projects[name] = {"name": name, "client": client, "slot": slot_of(name),
                               "threads": [], "items": {}, "new": False, "latest": None,
                               "received": None}
         return projects[name]
@@ -474,7 +556,7 @@ def build_model(store: Store, me: str, today: date | None = None,
             "summary": (data or {}).get("summary", ""),
             "status": (data or {}).get("status", ""),
             "snippet": snippet(last.get("body")), "extracted": bool(data),
-            "preview": snippet(last.get("body"), limit=len(last.get("body") or "")),
+            "preview": preview_text(last.get("body")),
             "project": name,
         }
 
@@ -583,8 +665,12 @@ def build_model(store: Store, me: str, today: date | None = None,
         if asked := awaiting_to_me(t, me, cutoff):
             # 답변완료는 표시한 뒤 나에게 새 메일이 오면 풀린다
             mark = mark_active(thread_marks.get(t["thread_key"]), asked)
+            # 기다리는 메일 = 나에게(To) 온 그 메일. 보낸 사람 · 본문 미리보기는 대화의 마지막 메일이 아니라 이것으로
+            ask = next((x for x in reversed(mails) if x["sent_at"] == asked and not x.get("is_mine")), {})
+            who, org = sender_parts(ask.get("from_name"), ask.get("from_email"), rules)
             (handled if mark else unanswered).append({
-                "thread": th, "asked": asked, "mark": mark,
+                "thread": th, "asked": asked, "mark": mark, "name": who, "org": org,
+                "body": preview_text(ask.get("body")),
                 "waited": max((now - parse_dt(asked)).days, 0)})
 
     # 창 밖으로 나간 대화라도 기한이 있는 남은 할 일은 완료 · 제외할 때까지 남긴다. 마감이
@@ -611,16 +697,34 @@ def build_model(store: Store, me: str, today: date | None = None,
             continue
         data = extractions[t["thread_key"]]
         received = [m for m in t["mails"] if not m.get("is_mine")] or t["mails"]
-        client, name, _ = classify(t["subject"], received[0].get("from_email", ""),
-                                   data.get("project", ""), rules)
+        _, name, _ = classify(t["subject"], received[0].get("from_email", ""),
+                              data.get("project", ""), rules)
         name = name or UNCLASSIFIED
         th = dict(thread_view(t, data, name, False), stale=True)
-        kept = [x for x in my_items(t, data, th, name, slots.get(client, 0))
-                + project_tasks(t, data, th, name, slots.get(client, 0),
+        kept = [x for x in my_items(t, data, th, name, slot_of(name))
+                + project_tasks(t, data, th, name, slot_of(name),
                                 people_orgs(t["mails"], rules))
                 if still_due(t["thread_key"], x["kind"], x["text"], x["deadline"]["raw"])]
         my_actions += [x for x in kept if x["kind"] == "me"]
         stale_tasks += [x for x in kept if x["kind"] == "task"]
+
+    # 설정에 없는 프로젝트는 다 모은 뒤에 색을 정한다 (같은 묶음 안에서 겹치지 않게).
+    # 그 전에 만든 할 일 · 프로젝트에는 이름으로 정해지는 색이 들어가 있으니 다시 칠한다
+    extra: dict[str, list[str]] = {}
+    for p in projects.values():
+        if p["name"] != UNCLASSIFIED and p["name"] not in auto:
+            extra.setdefault(p["client"], []).append(p["name"])
+    found = extra_slots(extra, auto, rules.client_of)
+    auto.update(found)
+    for name, slot in found.items():
+        slots.setdefault(name, slot)            # 고른 색이 있으면 그대로
+    for item in [*my_actions, *stale_tasks, *(t for p in projects.values() for i in p["items"].values()
+                                              for ts in i["roles"].values() for t in ts)]:
+        item["slot"] = slot_of(item["project"])
+    for p in projects.values():
+        p["slot"] = slot_of(p["name"])
+        p["auto_slot"] = auto.get(p["name"], 0)
+        p["color"] = picked.get(p["name"], "")
 
     for p in projects.values():
         p["threads"].sort(key=lambda x: x["last_at"] or "", reverse=True)
@@ -703,7 +807,7 @@ def build_model(store: Store, me: str, today: date | None = None,
 
     filters = load_filters(store, enabled_only=False)
     blocked = store.blocked_mails(window_days=window_days, now=now)
-    levels = [a["deadline"]["level"] for a in open_actions]
+    levels = [r["act"]["deadline"]["level"] for r in _merge_same(open_actions)]
     return {
         "generated_at": now, "today": today, "me": me, "window_days": window_days,
         "task_aliases": {k: v["task_id"] for k, v in links.items()},
@@ -718,6 +822,7 @@ def build_model(store: Store, me: str, today: date | None = None,
         "direct_threads": direct_threads, "blocked": blocked,
         "recipient_alerts": recipient_alerts(store, states, me),
         "recent_decisions": recent[:RECENT_DECISIONS],
+        "custom_colors": custom,
         "filters": filters, "blocking": block_overview(store, me), "roles": list(rules.roles),
         # 맨 아래 2depth: 분류 규칙(지금 설정 그대로) · 토큰 사용 현황(llm_calls 기록) · 대화별 지금 크기
         "rules": rules, "sizes": sizes,
@@ -727,7 +832,8 @@ def build_model(store: Store, me: str, today: date | None = None,
                   "history": sum(t["mail_count"] - t["recent_count"] for t in threads),
                   "unanswered": len(unanswered), "new": new_threads,
                   "extracted": extracted, "excluded": excluded,
-                  "my_open": len(open_actions), "due_today": levels.count("today"),
+                  # 오늘 탭은 다른 대화에 똑같이 잡힌 할 일을 한 줄로 합쳐 보여 주므로 그 줄 수로 센다
+                  "my_open": len(levels), "due_today": levels.count("today"),
                   "overdue": levels.count("overdue"), "done": len(done),
                   "done_today": sum(_kst_day(d["state"]["labeled_at"]) == today for d in done),
                   "dropped": len(dropped),
@@ -755,11 +861,12 @@ def _deadline(d: dict) -> str:
             f'{glyph}</i>{esc(d["label"])}</span>')
 
 
-def _badges(th: dict) -> str:
+def _badges(th: dict, direct: bool = True) -> str:
+    """대화 배지. 오늘 탭 대화 카드는 할 일이 모두 직접 받은 대화라 '직접' 을 빼고 단다 (direct=False)."""
     out = []
     if th["new"]:
         out.append('<span class="new">NEW</span>')
-    if th["direct"]:
+    if direct and th["direct"]:
         out.append('<span class="chip">직접</span>')
     if th.get("stale"):
         out.append('<span class="chip" title="최근 메일이 없는 대화 — 기한이 있어 완료 · 제외할 때까지 남겨 둡니다">'
@@ -769,9 +876,17 @@ def _badges(th: dict) -> str:
     return "".join(out)
 
 
+NAME_SEP = re.compile(r"\s*[,，、/]\s*")
+
+
+def _names(assignee: str | None) -> list[str]:
+    """여럿이 적힌 담당자('문지호, 배건우')를 사람별로 나눈다. 화면에는 ' · ' 로 이어 보인다."""
+    return [x for x in NAME_SEP.split((assignee or "").strip()) if x]
+
+
 def _who(item: dict) -> str:
     """담당자 이름 + 소속. 이름이 없으면 '미지정' 으로 비어 있음을 드러낸다."""
-    name = (f'<span class="nm">{esc(item["assignee"])}</span>' if item.get("assignee")
+    name = (f'<span class="nm">{esc(" · ".join(_names(item["assignee"])))}</span>' if item.get("assignee")
             else '<span class="nm none">미지정</span>')
     org = f'<span class="org">{esc(item["org"])}</span>' if item.get("org") else ""
     return f'<span class="who">{name}{org}</span>'
@@ -817,8 +932,7 @@ def _state_attrs(item: dict) -> dict:
         "data-pname": item.get("project", ""), "data-deadline": d["raw"],
         "data-urgency": item.get("urgency", ""), "data-role": item.get("role", ""),
         "data-assignee": item.get("assignee", ""),
-        # 문구는 여기서 싣는다. 화면의 .t 안에는 역할 태그가 같이 들어 있어
-        # textContent 를 긁으면 "기타…" 처럼 태그가 문구 앞에 붙어 기록된다
+        # 문구는 여기서 싣는다. 화면 글자를 긁으면 배지 · 태그 글자가 섞여 기록될 수 있다
         "data-text": item.get("text", ""),
         # 일정 탭에서 기한을 바꾸면 페이지가 세 탭의 같은 할 일을 함께 고친다 (메일 기한은 되돌릴 값)
         "data-mdl": d.get("mail", d["raw"]), "data-manual": "1" if d.get("manual") else "",
@@ -826,7 +940,10 @@ def _state_attrs(item: dict) -> dict:
 
 
 def _task(item: dict, show_src: bool = True) -> str:
-    """프로젝트 업무 한 줄: 역할 태그 + 내용 / 담당자 · 기한 · 출처 + 표시 버튼."""
+    """프로젝트 업무 한 줄: 역할 태그(같은 폭 왼쪽 칸) | 내용 / 담당자 · 기한 · 출처 + 표시 버튼.
+
+    태그를 문구 밖 칸에 두어, 태그 길이와 상관없이 문구 · 넘친 둘째 줄 · 담당자 줄이 한 선에서 시작한다.
+    """
     meta = [_who(item)]
     if dl := _deadline(item["deadline"]):
         meta.append(dl)
@@ -837,10 +954,10 @@ def _task(item: dict, show_src: bool = True) -> str:
              **_state_attrs(item)}
     return (
         "<li " + " ".join(f'{k}="{esc(v)}"' for k, v in attrs.items()) + ">"
-        f'<div class="th"><p class="t">{_role_tag(item)}{esc(item["text"])}</p>'
+        f'{_role_tag(item)}<div class="tb"><div class="th"><p class="t">{esc(item["text"])}</p>'
         f'{_repeat_tag(item)}'
         f'{_badges(item["thread"]) if item["thread"]["new"] else ""}</div>'
-        f'<div class="meta">{"".join(meta)}{_controls(item)}</div></li>'
+        f'<div class="meta">{"".join(meta)}{_controls(item)}</div></div></li>'
     )
 
 
@@ -875,8 +992,9 @@ def _decisions(decisions: list[dict], merged: bool) -> str:
     ordered = sorted(groups.items(), key=lambda kv: kv[1][0]["date"], reverse=True)
     ordered.sort(key=lambda kv: kv[0] == "")
 
-    counts = [f"{name or '결정자 미기재'} {len(ds)}" for name, ds in ordered]
-    summary = " · ".join(counts[:3]) + (f" 외 {len(counts) - 3}명" if len(counts) > 3 else "")
+    # 요약 줄에는 결정한 사람 이름만 (사람별 건수는 펼치면 이름 옆에 보인다)
+    names = [name or "결정자 미기재" for name, _ in ordered]
+    summary = " · ".join(names[:3]) + (f" 외 {len(names) - 3}명" if len(names) > 3 else "")
     blocks = []
     for name, ds in ordered:
         org = next((d["org"] for d in ds if d["org"]), "")
@@ -895,7 +1013,7 @@ def _decisions(decisions: list[dict], merged: bool) -> str:
             + (f'<span class="org">{esc(org)}</span>' if org else "")
             + f'<span class="cnt">{len(ds)}</span></div><ul>{rows}</ul></div>')
     return (f'<details class="decs" data-col="결정사항"><summary>결정사항 {len(decisions)}개'
-            f' <span class="ds">{esc(summary)}</span></summary>{"".join(blocks)}</details>')
+            f' <span class="ds">· {esc(summary)}</span></summary>{"".join(blocks)}</details>')
 
 
 def _work_item(item: dict, roles: list[str]) -> str:
@@ -971,15 +1089,16 @@ def _work_item(item: dict, roles: list[str]) -> str:
 KEBAB = ('<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">'
          '<circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/>'
          '<circle cx="8" cy="13" r="1.5"/></svg>')
-WAIT_MENU = (("answered", "답변완료"), ("deleted", "삭제"))
+WAIT_MENU = (("deleted", "삭제"),)      # 답변완료는 줄에 바로 보이는 버튼으로
 # 상태에 맞는 것만 보인다 (진행 중: 완료 · 삭제 / 완료 · 삭제: 되돌리기)
 PROJECT_MENU = (("done", "직접 완료 처리"), ("deleted", "삭제"), ("open", "자동 분류로 되돌리기"))
+COLOR_ITEM = '<button type="button" role="menuitem" data-color-open>색 바꾸기…</button>'   # 프로젝트 ⋮ 맨 위
 
 
-def _kebab(items, attr: str, label: str) -> str:
-    """세로 ⋮ 메뉴. 메뉴 칸은 스크롤 영역에 잘리지 않도록 페이지가 버튼 옆에 띄운다."""
-    buttons = "".join(f'<button type="button" role="menuitem" data-{attr}="{k}">{esc(t)}</button>'
-                      for k, t in items)
+def _kebab(items, attr: str, label: str, first: str = "") -> str:
+    """세로 ⋮ 메뉴. 메뉴 칸은 스크롤 영역에 잘리지 않도록 페이지가 버튼 옆에 띄운다. first 는 맨 위에 둘 항목."""
+    buttons = first + "".join(f'<button type="button" role="menuitem" data-{attr}="{k}">{esc(t)}</button>'
+                              for k, t in items)
     return (f'<span class="kb"><button type="button" class="kb-btn" aria-haspopup="menu" '
             f'aria-expanded="false" aria-label="{esc(label)}" title="메뉴">{KEBAB}</button>'
             f'<span class="kb-menu" role="menu" hidden>{buttons}</span></span>')
@@ -1004,9 +1123,10 @@ def _project_attrs(p: dict) -> str:
 
 
 def _project_card(p: dict, roles: list[str]) -> str:
-    """접고 펴는 프로젝트 한 칸. 접힌 머리말에 이름 · 완료한 할 일 · 최근 메일 날짜.
+    """접고 펴는 프로젝트 한 칸. 머리줄에 이름 · 완료한 할 일 · 최근 메일 날짜.
 
     완료 / 전체로 적는다 (오늘 탭 프로젝트별 진행 막대와 같은 뜻). 전체에서 제외 · 업무삭제한 일은 뺀다.
+    프로젝트는 상자로 감싸지 않는다 — 펼치면 머리줄 색 막대가 세로줄로 이어져 업무 상자들을 묶는다 (--pc).
     """
     meta = (f'업무 {len(p["items"])} · 완료 '
             f'<b class="num" data-done="{esc(p["name"])}">{p["progress"]["total"] - p["progress"]["open"]}</b>/'
@@ -1015,16 +1135,19 @@ def _project_card(p: dict, roles: list[str]) -> str:
     if p["latest"]:
         meta += f' · 최근 <span class="num">{p["latest"].astimezone(KST):%m/%d}</span>'
     head = (
-        f'<summary class="proj-h"><i class="bar s{p["slot"]}" aria-hidden="true"></i>'
+        # 색 막대는 색 고르는 버튼 (⋮ '색 바꾸기…' 도 같은 창). data-color 는 고른 색('' = 자동), data-auto 는 자동 색 칸
+        f'<summary class="proj-h"><button type="button" class="bar s{p["slot"]}" data-color="{esc(p.get("color", ""))}" '
+        f'data-auto="{p.get("auto_slot", 0)}" aria-haspopup="dialog" aria-expanded="false" '
+        f'aria-label="{esc(p["name"])} 색 바꾸기" title="색 바꾸기"></button>'
         f'<h3>{esc(p["name"])}</h3>{"<span class=new>NEW</span>" if p["new"] else ""}'
         f'<span class="pm">{meta}</span>'
         f'<span class="st">{esc(_mark_text(p["mark"], "project"))}</span>'
-        f'{_kebab(PROJECT_MENU, "pmark", p["name"] + " 메뉴")}</summary>'
+        f'{_kebab(PROJECT_MENU, "pmark", p["name"] + " 메뉴", COLOR_ITEM)}</summary>'
     )
     body = "".join(_work_item(i, roles) for i in p["items"])
     hidden = "" if p["pstate"] == "open" else " hidden"
-    return (f'<details class="proj" data-project="{esc(p["name"])}" {_project_attrs(p)}{hidden}>'
-            f'{head}<div class="proj-b">{body}</div></details>')
+    return (f'<details class="proj" data-project="{esc(p["name"])}" {_project_attrs(p)} '
+            f'style="--pc:var(--s{p["slot"]})"{hidden}>{head}<div class="proj-b">{body}</div></details>')
 
 
 def _projects_tab(m: dict) -> str:
@@ -1055,11 +1178,12 @@ def _projects_tab(m: dict) -> str:
         cards = "".join(_project_card(p, m["roles"]) for p in ps)
         groups.append(
             f'<section class="client" data-client="{esc(client)}"{"" if shown else " hidden"}>'
-            f'<div class="client-h"><i class="sw s{ps[0]["slot"]}" aria-hidden="true"></i>'
+            # 색은 세부 프로젝트마다라 고객사 머리 네모는 중립 회색
+            '<div class="client-h"><i class="sw s0" aria-hidden="true"></i>'
             f'<h2>{esc(client or OTHER_CLIENT)}</h2><span class="cnt num" data-ccnt>{shown}</span>'
             f'</div><div class="projs">{cards}</div></section>')
     return (
-        '<div class="pad"><div class="ptools">'
+        f'<div class="pad">{_recent_decisions(m)}<div class="ptools">'
         f'<div class="seg" role="group" aria-label="프로젝트 보기">{seg}</div>'
         f'<p class="note" id="pview-note">{esc(views[0][2])}</p></div>'
         f'<div class="pgroups">{"".join(groups)}</div>'
@@ -1068,7 +1192,7 @@ def _projects_tab(m: dict) -> str:
     )
 
 
-# ── 오늘 탭 (1a: 할 일 · 진행 / 답을 기다리는 메일 · 결정사항) ──────────────────
+# ── 머리 요약 · 오늘 탭 (할 일 · 진행) · 답장 대기 탭 · 최근 결정사항(프로젝트 탭 맨 위) ──
 def _next_label(m: dict) -> str:
     """다음 자동 정리 시각: 오늘이면 '17:00', 아니면 '내일 09:00'."""
     nxt = m["next_extract"]
@@ -1084,9 +1208,12 @@ def _hero(m: dict) -> str:
     local = m["generated_at"].astimezone(KST)
     return (
         '<header class="hero"><div class="hero-t">'
-        f'<p class="eyebrow">MAIL DIGEST · {d:%m/%d} {WEEKDAYS[d.weekday()]}</p>'
+        f'<div class="brand-identity">{MAILWORK_LOGO}<div class="brand-account">'
+        f'<p class="sub brand-email" title="생성 {local:%Y-%m-%d %H:%M}">{esc(m["me"])}</p>'
+        f'<p class="brand-date"><time datetime="{d:%Y-%m-%d}">{d:%m/%d} {WEEKDAYS[d.weekday()]}</time></p>'
+        '</div></div>'
         f'<h1 class="sr-only">{title}</h1>'
-        f'<p class="sub" title="생성 {local:%Y-%m-%d %H:%M}">{esc(m["me"])}</p></div>'
+        '</div>'
         f'<div class="hero-acts">{_usage_link(m)}'
         '<button type="button" id="theme" class="pill" aria-label="테마 전환">테마: 시스템</button>'
         '</div></header>'
@@ -1138,7 +1265,8 @@ def _kpis(m: dict) -> str:
         f'<p class="v">{value}</p><p class="c deadline-counts">{caption}</p></div>'
         '<div class="kpi"><h2 class="l">답장 대기</h2>'
         f'<p class="v"><b class="num{warn}" id="kpi-wait">{s["unanswered"]}</b><span class="u">건 대기</span></p>'
-        f'<p class="c" id="kpi-wait-c">{wait_caption}</p></div></div>'
+        f'<p class="c" id="kpi-wait-c">{wait_caption}</p>'
+        '<a class="kpi-go" href="#wait">목록 보기 →</a></div></div>'
         f'<p class="project-summary">진행 프로젝트 <b class="num" id="kpi-proj">{s["named_projects"]}</b>개'
         f' · 새로 온 대화 <b class="num">{s["new"]}건</b></p></div>'
         '<aside class="system-summary" aria-labelledby="system-summary-title">'
@@ -1161,10 +1289,8 @@ def _status_text(state: dict | None) -> str:
     return " · ".join(x for x in (LABELS[state["label"]], state.get("reason"), when) if x)
 
 
-# 남은 내 할 일은 마감 기준으로 묶는다 (build_model 의 마감일순 정렬과 같은 순서). 페이지 JS 도 이 이름을 쓴다
-ACT_GROUPS = {"overdue": "기한 지남", "today": "오늘 마감", "soon": "3일 안에 마감",
-              "later": "그 이후", "none": "기한 없음"}
-RELATED_PREVIEW = 2                     # 할 일 카드에 펼쳐 둘 다른 담당자 업무 수
+RELATED_PREVIEW = 4                     # 대화 카드 '다른 담당자' 를 펼쳤을 때 보일 업무 수
+SAME_TASK_MIN = 15                      # 다른 대화의 같은 할 일로 합칠 최소 글자 수 (띄어쓰기 뺀). '확인 후 회신' 류는 안 합친다
 THREAD_STATUS = {"진행중": "s-ing", "보류": "s-hold", "완료": "s-done"}
 
 
@@ -1219,28 +1345,6 @@ def _act_context(m: dict) -> dict[str, dict]:
     return ctx
 
 
-def _act_details(a: dict, ctx: dict) -> str:
-    """카드 가운데 칸: 현황(대화 요약 + 진행 상태) · 다른 담당자(같은 대화에서 남이 맡은 남은 일)."""
-    th, rows = a["thread"], []
-    if body := th.get("summary") or th.get("snippet"):
-        status = th.get("status") or ""
-        chip = (f'<span class="stt {THREAD_STATUS.get(status, "s-ing")}">{esc(status)}</span>'
-                if status else "")
-        preview = (f' data-preview="{esc(th.get("preview") or body)}" data-preview-label="최근 메일 내용"'
-                   if not th.get("summary") else "")
-        rows.append(f'<div><dt>{"현황" if th.get("summary") else "최근 메일"}</dt>'
-                    f'<dd{preview}>{chip}{esc(body)}</dd></div>')
-    others = sorted((t for t in ctx.get("others", ()) if not _same_work(t["text"], a["text"])),
-                    key=lambda t: t["deadline"]["sort"])
-    if others:
-        lines = "".join(f'<p class="oth">{_who(t)}<span class="rx">{esc(t["text"])}</span>'
-                        f'{_deadline(t["deadline"])}</p>' for t in others[:RELATED_PREVIEW])
-        if len(others) > RELATED_PREVIEW:
-            lines += f'<p class="oth more">외 {len(others) - RELATED_PREVIEW}건은 프로젝트 탭에서</p>'
-        rows.append(f'<div><dt>다른 담당자</dt><dd>{lines}</dd></div>')
-    return f'<dl class="ctx">{"".join(rows)}</dl>' if rows else ""
-
-
 def _mail_line(a: dict, ctx: dict, tip: str = "tip") -> str:
     """출처 메일 한 줄: 마지막 보낸 사람(이름만) · 시각 · 통수 · 답장 대기.
 
@@ -1276,19 +1380,20 @@ def _due_text(d: dict) -> str:
     return due
 
 
-def _act(a: dict, order: int | None = None, ctx: dict | None = None, details: bool = True) -> str:
-    """내 할 일 카드. 위에서부터 한눈에:
-    긴급도 · 기한(날짜) · NEW/직접 · 프로젝트 / 할 일 / 현황 · 다른 담당자 / 출처 메일(제목은 말풍선) + 버튼.
+def _act(a: dict, ctx: dict | None = None) -> str:
+    """완료 · 제외·삭제 목록의 할 일 카드. 위에서부터 한눈에:
+    긴급도 · 기한(날짜) · NEW/직접 · 프로젝트 / 할 일 / 출처 메일(제목은 말풍선) + 버튼.
 
     상태는 data-state 하나로 두고, 버튼을 누르면 페이지가 카드를 해당 목록으로 옮긴다.
-    details=False 는 현황 · 다른 담당자 칸을 뺀다 (완료 · 제외 목록에서는 어차피 가려지는 칸).
+    남은 내 할 일은 이 카드 대신 대화 카드 안의 한 줄(_act_row)로 보인다. 그래서 카드가 남은 일이 되면
+    페이지가 빼 두고(parked), 현황 · 다른 담당자는 대화 카드에만 그린다.
     """
     th, d = a["thread"], a["deadline"]
     here = (ctx or {}).get(th["key"], {})
     if a.get("kind") == "task":
         tags = [_role_tag(a)]
         if a.get("assignee"):
-            tags.append(f'<span class="tag">{esc(a["assignee"])}</span>')
+            tags.append(f'<span class="tag">{esc(" · ".join(_names(a["assignee"])))}</span>')
     else:
         glyph, label = URG_LABEL[a["urgency"]]
         tags = [f'<span class="tag u-{a["urgency"]}"><i aria-hidden="true">{glyph}</i>'
@@ -1299,43 +1404,234 @@ def _act(a: dict, order: int | None = None, ctx: dict | None = None, details: bo
     tags.append(f'<span class="pj"><i class="sw s{a["slot"]}" aria-hidden="true"></i>'
                 f'{esc(a["project"])}</span>')
     tags.append(_repeat_tag(a))
-    attrs = {**_state_attrs(a), "data-order": "" if order is None else str(order),
-             "data-new": "1" if th.get("new") else ""}
     return (
-        '<li class="act" ' + " ".join(f'{k}="{esc(v)}"' for k, v in attrs.items()) + ">"
+        '<li class="act" ' + " ".join(f'{k}="{esc(v)}"' for k, v in _state_attrs(a).items()) + ">"
         f'<div class="tg">{"".join(tags)}</div><p class="t">{esc(a["text"])}</p>'
-        f'{_act_details(a, here) if details else ""}'
         f'<div class="tf">{_mail_line(a, here)}{_controls(a)}</div></li>'
     )
 
 
-def _act_templates(m: dict) -> str:
-    """프로젝트 · 일정 탭에서 표시한 할 일을 오늘 탭 완료 / 제외·삭제 목록에 바로 올릴 카드 틀.
+def _merge_same(acts: list[dict]) -> list[dict]:
+    """남은 내 할 일을 오늘 탭 줄 단위로: 같은 프로젝트에 띄어쓰기만 다른 같은 문구가 또 있으면 한 줄로.
 
-    오늘 탭에 카드가 없는 프로젝트 할 일만 <template> 에 미리 그려 둔다 (화면에 안 보이고, 문서 검색에도
-    걸리지 않는다). 누르면 페이지 JS 가 복사해 목록에 넣고, 다음 갱신 때 서버가 그린 카드로 바뀐다.
+    업무 정리가 한 요청을 이어진 두 대화에서 한 번씩 뽑는 경우가 있다. 앞(마감이 급한) 쪽에 남기고
+    뒤의 할 일은 dups 로 붙인다. 그 줄을 표시하면 페이지가 붙은 할 일도 같은 표시로 함께 기록한다.
     """
-    shown = {a["id"] for a in (*m["my_actions"], *m.get("done_actions", ()), *m.get("dropped_actions", ()))}
-    tasks = {t["id"]: t for p in m["projects"] for i in p["items"] for ts in i["roles"].values() for t in ts}
+    rows: list[dict] = []
+    seen: dict[tuple[str, str], dict] = {}
+    for a in acts:
+        key = (a.get("project", ""), "".join(a["text"].split()).lower())
+        if len(key[1]) >= SAME_TASK_MIN and key in seen:
+            seen[key]["dups"].append(a)
+            continue
+        row = {"act": a, "dups": []}
+        seen.setdefault(key, row)
+        rows.append(row)
+    return rows
+
+
+def _conversations(rows: list[dict]) -> list[dict]:
+    """줄을 대화(스레드)별로 묶는다. 대화 순서는 가장 급한 할 일 순 (my_actions 가 마감일순이라 처음 나온 순서)."""
+    convs: dict[str, dict] = {}
+    for r in rows:
+        a = r["act"]
+        convs.setdefault(a["thread"]["key"], {"thread": a["thread"], "project": a.get("project", ""),
+                                              "slot": a.get("slot", 0), "rows": []})["rows"].append(r)
+    return list(convs.values())
+
+
+def _act_title(th: dict) -> str:
+    """대화 카드 제목: 메일 제목에서 회신 표식 · 앞머리 [태그] · 날짜 꼬리 · '의 건' 을 걷어낸 것.
+
+    업무명 묶기(work_title)의 날짜 꼬리는 6~8자리만 떼므로 '_202601001' 같은 긴 관리번호는 여기서 먼저 뗀다
+    (묶기 규칙은 그대로 둔다).
+    """
+    subject = re.sub(r"\s*_\s*\d{6,}\s*$", "", th.get("subject") or "")
+    return work_title(subject) or th.get("subject") or "(제목 없음)"
+
+
+def _act_row(r: dict, order: int) -> str:
+    """대화 카드 안의 내 할 일 한 줄: 체크(완료) · 할 일 / 기한 · 제외 · 업무삭제(올리면 보임).
+
+    표시해도 줄은 그 자리에 둔다 (취소선 · 상태 + 되돌리기). 완료 / 제외·삭제 목록에는 페이지가
+    카드 틀(act-{id})을 복사해 올리고, 다음 갱신 때 서버가 그린 목록으로 바뀐다.
+    문구를 눌러도 체크하지 않는다 (IP · 주소 같은 문구를 긁어 쓰는 일이 많아서).
+    """
+    a = r["act"]
+    d = a["deadline"]
+    attrs = {**_state_attrs(a), "data-order": str(order), "data-new": "1" if a["thread"].get("new") else "",
+             "data-dups": " ".join(x["id"] for x in r["dups"])}
+    dup = ""
+    if r["dups"]:
+        where = " / ".join(_act_title(x["thread"]) for x in r["dups"])
+        dup = (f'<span class="dup" title="{esc(where)}">다른 대화 {len(r["dups"])}곳의 같은 할 일도 '
+               '함께 표시됩니다</span>')
+    tid = f'tkt-{a["id"]}'
+    return (
+        '<li class="tk" ' + " ".join(f'{k}="{esc(v)}"' for k, v in attrs.items()) + ">"
+        f'<input type="checkbox" class="ck" aria-labelledby="{tid}"'
+        f'{" checked" if state_label(a) == "done" else ""}>'
+        f'<div class="tk-b"><p class="tk-t" id="{tid}">{esc(a["text"])}</p>{dup}{_repeat_tag(a)}</div>'
+        f'<div class="tk-r"><span class="due lv-{d["level"]}">{esc(_due_text(d))}</span>{MANUAL_TAG}'
+        f'<span class="st">{esc(_status_text(a.get("state")))}</span>'
+        '<span class="ctl"><button type="button" class="gh" data-act="excluded">제외</button>'
+        '<button type="button" class="gh" data-act="deleted">업무삭제</button>'
+        '<button type="button" class="gh undo" data-act="open">되돌리기</button></span></div></li>'
+    )
+
+
+def _cv_date(c: dict) -> str:
+    """대화 줄 제목 위 날짜 칩: 기한 있는 할 일이 있으면(= '마감 있는 일' 칸) 가장 급한 마감일 · D-day 를
+    기한 등급 색으로 ('10/16 금 · D-10'). 기한 없는 대화(= 프로젝트 묶음)는 빈 줄로 두고, 최근 메일 시각은 메일 줄에 있다.
+
+    빈 줄도 늘 그려 둔다 — 넓은 화면에서 이 줄이 할 일 칸 위 머리 자리를 잡는다.
+    할 일을 표시하거나 기한이 바뀌어 대화가 칸을 옮기면 페이지 JS(paintDate)가 같은 모양으로 다시 그린다.
+    """
+    dues = [r["act"]["deadline"] for r in c["rows"] if r["act"]["deadline"]["level"] != "none"]
+    if not dues:
+        return '<p class="cv-due"></p>'
+    d = min(dues, key=lambda x: x["sort"])
+    day = date.fromisoformat(iso) if (iso := iso_day(d["raw"])) else None
+    big = f"{day.month}/{day.day} {WEEKDAYS[day.weekday()]}" if day else "기한"
+    return (f'<p class="cv-due"><span class="cv-dc lv-{d["level"]}"><b class="num">{big}</b> · '
+            f'{esc(d["label"])}</span></p>')
+
+
+def _cv_others(c: dict, here: dict) -> str:
+    """같은 대화에서 남이 맡은 남은 일. 접어 두고 머리에 건수 · 이름(소속)만."""
+    texts = [r["act"]["text"] for r in c["rows"]]
+    others = sorted((t for t in here.get("others", ()) if not any(_same_work(t["text"], x) for x in texts)),
+                    key=lambda t: t["deadline"]["sort"])
+    if not others:
+        return ""
+    # 담당자가 여럿이면('문지호, 배건우') 사람마다 이름만: '문지호 · 배건우'
+    names = list(dict.fromkeys(person_key(n) + (f'({t["org"]})' if t.get("org") else "")
+                               for t in others for n in _names(t.get("assignee"))))
+    late = sum(t["deadline"]["level"] == "overdue" for t in others)
+    head = (f'다른 담당자 {len(others)}건 · {esc(" · ".join(names[:2]))}{" 외" if len(names) > 2 else ""}'
+            + (f' <b class="late">기한 지남 {late}</b>' if late else ""))
+    lines = "".join(f'<p class="oth">{_who(t)}<span class="rx">{esc(t["text"])}</span>'
+                    f'{_deadline(t["deadline"])}</p>' for t in others[:RELATED_PREVIEW])
+    if len(others) > RELATED_PREVIEW:
+        lines += f'<p class="oth more">외 {len(others) - RELATED_PREVIEW}건은 프로젝트 탭에서</p>'
+    return (f'<details class="cv-oth"><summary><span class="chv" aria-hidden="true"></span>{head}</summary>'
+            f'<div>{lines}</div></details>')
+
+
+def _act_cv(c: dict, ctx: dict) -> str:
+    """대화 줄(패널 안 한 줄): 날짜 칩(마감 있는 일) / 제목 · 배지 · 진행 상태 / 프로젝트 · 메일 줄 · 답장 대기 /
+    현황 두 줄 / 내 할 일 줄 / 다른 담당자(접힘).
+
+    진행 상태 칩은 제목 옆에 둔다 (프로젝트 탭 업무 카드와 같은 자리). 현황 문단 앞에 두면 첫 줄만 칩 폭만큼
+    들여 쓰여 둘째 줄과 시작선이 어긋난다.
+
+    프로젝트 이름은 늘 싣고, 프로젝트 묶음 안에서는 CSS 가 숨긴다 (머리줄에 있으므로). 메일 시각은 늘 보인다.
+    페이지가 기한을 바꿔 대화를 칸 사이로 옮겨도 그대로 맞는다. 현황은 두 줄까지, 넘치면 페이지가 '더보기' 를 보인다.
+    """
+    th = c["thread"]
+    here = ctx.get(th["key"], {})
+    who, count = esc(person_key(th.get("from"))), f'메일 {th["count"]}통' if th.get("count") else ""
+    at = esc(fmt_dt(th["last_at"])) if th.get("last_at") else ""
+    # 숨기는 시각 앞뒤의 구분점도 같이 숨도록 span 안에 둔다
+    bits = who + (f'<span class="cv-at">{" · " if who else ""}{at}{" · " if count and not who else ""}</span>'
+                  if at else "") + (f'{" · " if who else ""}{count}' if count else "")
+    waited = here.get("waited")
+    meta = "".join((
+        f'<span class="pj"><i class="sw s{c["slot"]}" aria-hidden="true"></i>{esc(c["project"])}</span>',
+        f'<span class="cv-mail"><i aria-hidden="true">✉</i>{bits}</span>' if bits else "",
+        "" if waited is None else
+        f'<b class="rep">{f"답장 대기 {waited}일" if waited else "오늘 받음 · 답장 전"}</b>'))
+    meta = f'<p class="cv-m">{meta}</p>' if meta else ""
+    summary, status = "", th.get("status") or ""
+    chip = f'<span class="stt {THREAD_STATUS.get(status, "s-ing")}">{esc(status)}</span>' if status else ""
+    if body := th.get("summary") or th.get("snippet"):
+        if th.get("summary"):
+            label = preview = ""
+        else:
+            label = '<span class="cv-l">최근 메일</span>'
+            preview = f' data-preview="{esc(th.get("preview") or body)}" data-preview-label="최근 메일 내용"'
+        summary = (f'<div class="cv-s"><p class="tx"{preview}>{label}{esc(body)}</p>'
+                   '<button type="button" class="cv-more" aria-expanded="false">더보기</button></div>')
+    last = _kst_day(th.get("last_at"))
+    attrs = {"data-thread": th["key"], "data-pg": c["project"], "data-slot": str(c["slot"]),
+             "data-order": str(c.get("order", 99999)), "data-last": last.isoformat() if last else ""}
+    return (
+        '<article class="cv" ' + " ".join(f'{k}="{esc(v)}"' for k, v in attrs.items()) + ">"
+        f'<div class="cv-b">{_cv_date(c)}'
+        f'<div class="cv-h"><h3 title="{esc(th.get("subject") or "")}">{esc(_act_title(th))}'
+        f'{_badges(th, direct=False)}{chip}</h3></div>'
+        f'{meta}{summary}'
+        f'<ul class="tks">{"".join(_act_row(r, r.get("order", 99999)) for r in c["rows"])}</ul>'
+        f'{_cv_others(c, here)}<p class="cv-fin">이 대화의 할 일을 모두 정리했습니다</p></div></article>'
+    )
+
+
+def _act_group(name: str, convs: list[dict], ctx: dict) -> str:
+    """기한 없는 대화의 프로젝트 묶음. 접고 펴기는 페이지가 브라우저에 기억한다 (처음에는 펼침).
+    페이지 JS(makeGroup)도 같은 모양으로 만든다."""
+    rows = sum(len(c["rows"]) for c in convs)
+    return (f'<details class="apg" data-pg="{esc(name)}" open><summary><span class="chv" aria-hidden="true">'
+            f'</span><i class="sw s{convs[0]["slot"]}" aria-hidden="true"></i><span class="apg-n">{esc(name)}'
+            f'</span><span class="apg-c num">대화 {len(convs)} · 할 일 {rows}</span></summary>'
+            f'<div class="cvs">{"".join(_act_cv(c, ctx) for c in convs)}</div></details>')
+
+
+def _open_view(acts: list[dict], ctx: dict) -> str:
+    """할 일 보기: 기한 있는 대화는 마감순으로 위에, 기한 없는 대화는 프로젝트별로 접어 둘 수 있게.
+
+    대화에 기한 있는 할 일이 하나라도 있으면 대화 카드째 '마감 있는 일' 칸에 둔다.
+    두 칸은 비어도 틀을 그려 둔다 (되돌리거나 기한을 바꾸면 페이지가 카드를 옮겨 넣는다).
+    """
+    convs = _conversations(_merge_same(acts))
+    n = 0
+    for i, c in enumerate(convs):
+        c["order"] = i
+        for r in c["rows"]:
+            r["order"], n = n, n + 1
+    dated = [c for c in convs if any(r["act"]["deadline"]["level"] != "none" for r in c["rows"])]
+    groups: dict[str, list[dict]] = {}
+    for c in convs:
+        if c not in dated:
+            groups.setdefault(c["project"], []).append(c)
+    if UNCLASSIFIED in groups:                      # 미분류는 맨 아래
+        groups[UNCLASSIFIED] = groups.pop(UNCLASSIFIED)
+    over = sum(r["act"]["deadline"]["level"] == "overdue" for c in convs for r in c["rows"])
+    due_n = sum(len(c["rows"]) for c in dated)
+    return (
+        f'<p class="acts-sum">대화 <b class="num" id="sum-cv">{len(convs)}</b>개 · 할 일 '
+        f'<b class="num" id="sum-n">{n}</b>건<span class="over" id="sum-over"{"" if over else " hidden"}>'
+        f' · 기한 지남 <b class="num" id="sum-over-n">{over}</b></span> · 체크하면 완료로 표시됩니다</p>'
+        f'<section class="az" data-zone="due"{"" if dated else " hidden"}><h3 class="az-h"><span>마감 있는 일'
+        f'</span><b class="az-n num">{due_n}</b></h3>'
+        f'<div class="cvs">{"".join(_act_cv(c, ctx) for c in dated)}</div></section>'
+        f'<section class="az" data-zone="rest"{"" if groups else " hidden"}><h3 class="az-h"><span>'
+        f'기한 없는 일</span><b class="az-n num">{n - due_n}</b>'
+        '<button type="button" class="az-fold">모두 접기</button></h3>'
+        f'<div class="apgs">{"".join(_act_group(k, v, ctx) for k, v in groups.items())}</div></section>'
+    )
+
+
+def _act_templates(m: dict) -> str:
+    """오늘 탭에 나중에 올릴 카드 · 대화 카드의 틀. <template> 이라 화면에 안 보이고 문서 검색에도 걸리지 않는다.
+
+    act-{id}: 완료 / 제외·삭제 목록에 카드가 없는 할 일(남은 내 할 일 · 프로젝트 할 일)의 카드.
+      어느 탭에서든 표시하면 페이지 JS 가 복사해 해당 목록에 넣는다.
+    cv-{id}: 완료 / 제외·삭제한 내 할 일의 대화 카드(그 할 일 한 줄만). 되돌렸는데 할 일 보기에 그 줄이
+      없으면 복사해 넣는다. 둘 다 다음 갱신 때 서버가 그린 것으로 바뀐다.
+    """
+    marked = [*m.get("done_actions", ()), *m.get("dropped_actions", ())]
+    carded = {a["id"] for a in marked}
+    tasks = {a["id"]: a for a in m["my_actions"]}
+    tasks.update({t["id"]: t for p in m["projects"] for i in p["items"] for ts in i["roles"].values() for t in ts})
     tasks.update({r["id"]: r for r in m.get("schedule", ()) if r.get("kind") == "task"})
-    return "".join(f'<template id="act-{tid}">{_act(t, details=False)}</template>'
-                   for tid, t in tasks.items() if tid not in shown)
-
-
-def _act_group(level: str, n: int) -> str:
-    """남은 할 일 목록 안의 마감 묶음 머리줄. 카드가 오가면 페이지 JS(regroup)가 같은 모양으로 다시 단다."""
-    return (f'<li class="grp lv-{level}" data-grp="{level}"><span class="gl">{ACT_GROUPS[level]}'
-            f'</span><b class="gn num">{n}</b></li>')
-
-
-def _open_acts(acts: list[dict], ctx: dict) -> str:
-    out = []
-    for i, a in enumerate(acts):
-        level = a["deadline"]["level"]
-        if not i or acts[i - 1]["deadline"]["level"] != level:
-            out.append(_act_group(level, sum(x["deadline"]["level"] == level for x in acts)))
-        out.append(_act(a, i, ctx))
-    return "".join(out)
+    ctx = _act_context(m)
+    cards = "".join(f'<template id="act-{tid}">{_act(t)}</template>'
+                    for tid, t in tasks.items() if tid not in carded)
+    convs = "".join(
+        f'<template id="cv-{a["id"]}">'
+        f'{_act_cv(_conversations([{"act": a, "dups": []}])[0], ctx)}</template>'
+        for a in marked if a.get("kind") != "task")
+    return cards + convs
 
 
 def _acts(m: dict) -> str:
@@ -1349,28 +1645,28 @@ def _acts(m: dict) -> str:
                 f'<ul class="thr-list box">{rows or "<li class=empty>없음</li>"}</ul>')
     ctx = _act_context(m)
     views = [
-        ("open", "할 일", acts, "남은 내 할 일이 없습니다.",
-         "마감이 급한 순 · ✉ 메일 줄에 마우스를 올리면 제목이 보입니다.\n"
-         "완료·제외·업무삭제로 표시하면 목록에서 빠지고, 표시 기록은 업무 정리 기준을 다듬는 데 씁니다."),
-        ("done", "완료", m.get("done_actions", []),
+        ("open", "할 일", m["stats"]["my_open"], "남은 내 할 일이 없습니다.",
+         "메일 대화별로 묶었습니다 · 기한 있는 일이 위, 기한 없는 일은 프로젝트별.\n"
+         "체크하면 완료, 줄에 마우스를 올리면 제외·업무삭제. 표시 기록은 업무 정리 기준을 다듬는 데 씁니다."),
+        ("done", "완료", len(m.get("done_actions", [])),
          f"최근 {LABELED_DAYS}일 동안 완료한 일이 없습니다.",
          f"최근 {LABELED_DAYS}일 · 최근에 완료한 순"),
-        ("dropped", "제외·삭제", m.get("dropped_actions", []),
+        ("dropped", "제외·삭제", len(m.get("dropped_actions", [])),
          f"최근 {LABELED_DAYS}일 동안 제외하거나 삭제한 일이 없습니다.",
          f"최근 {LABELED_DAYS}일 · 최근에 표시한 순"),
     ]
     seg = "".join(
         f'<button type="button" data-view="{key}" data-note="{esc(note)}" '
         f'aria-pressed="{"true" if key == "open" else "false"}">'
-        f'{label} <b class="num" id="cnt-{key}">{len(items)}</b></button>'
-        for key, label, items, _, note in views)
-    lists = "".join(
-        f'<ul class="acts" data-list="{key}"{"" if key == "open" else " hidden"}>'
-        + (_open_acts(items, ctx) if key == "open"
-           else "".join(_act(a, None, ctx) for a in items)) + "</ul>"
-        f'<p class="empty-state" data-empty="{key}"'
-        f'{" hidden" if items or key != "open" else ""}>{empty}</p>'
-        for key, _, items, empty, _ in views)
+        f'{label} <b class="num" id="cnt-{key}">{n}</b></button>'
+        for key, label, n, _, note in views)
+    marked = {"done": m.get("done_actions", []), "dropped": m.get("dropped_actions", [])}
+    lists = (f'<div class="acts-open" data-list="open">{_open_view(acts, ctx)}</div>'
+             f'<p class="empty-state" data-empty="open"{"" if not acts else " hidden"}>{views[0][3]}</p>'
+             + "".join(f'<ul class="acts" data-list="{key}" hidden>'
+                       + "".join(_act(a, ctx) for a in marked[key]) + "</ul>"
+                       f'<p class="empty-state" data-empty="{key}" hidden>{empty}</p>'
+                       for key, _, _, empty, _ in views[1:]))
     # 보기 설명은 제목 옆 (!) 에 마우스를 올리거나 포커스하면 말풍선으로 (줄바꿈 유지). 보기를 바꾸면 페이지가 문구를 바꾼다
     return (
         '<div class="sec-h has-hint"><div class="sec-t"><h2>내가 해야 할 일</h2>'
@@ -1416,33 +1712,58 @@ def _progress(m: dict) -> str:
             '진행 중인 프로젝트가 없습니다.</p>')
 
 
-def _wait(u: dict, extra: bool = False) -> str:
-    """답을 기다리는 메일 한 칸. ⋮ 메뉴로 답변완료 · 삭제, 표시한 칸은 되돌리기 버튼."""
+def _wait(u: dict, extra: bool = False, tasks: int = 0) -> str:
+    """답장 대기 탭 한 줄: 경과일 배지 | 보낸 사람 · 소속 · 프로젝트 | 요약 두 줄 | 받은 시각 · 할 일 N건 → |
+    답변완료(마우스를 올리면 보임) | ⋮(삭제). 좁은 화면에서는 위아래로 쌓는다. 표시한 줄은 상태 + 되돌리기.
+
+    요약에 마우스를 올리면 나에게 온 그 메일의 본문을 띄운다. 배지 색은 오늘 · 1일 · 2일 이상 세 단계.
+    할 일 N건은 같은 대화의 남은 내 할 일 줄 수로, 누르면 오늘 탭의 그 대화 카드로 옮겨 간다 (페이지가 다시 센다).
+    """
     th, waited, mark = u["thread"], u["waited"], u.get("mark")
-    who = " · ".join(x for x in (th["from"], th["project"]) if x and x != UNCLASSIFIED)
-    sub = (f'<p class="wsub" title="{esc(th["subject"])}">{esc(th["subject"])}</p>'
-           if th["summary"] else "")
+    name, org, project = u.get("name") or th["from"], u.get("org") or "", th["project"]
+    if org and org in project:                  # '오로라 · 오로라 운영(기타)' → '오로라 운영(기타)'
+        org = ""
+    sub = " · ".join(x for x in (org, project) if x and x != UNCLASSIFIED and x != name)
     attrs = {"data-thread": th["key"], "data-asked": u["asked"], "data-waited": str(waited),
-             "data-title": th["subject"], "data-wstate": mark["label"] if mark else "open",
+             "data-lv": str(min(waited, 2)), "data-title": th["subject"],
+             "data-wstate": mark["label"] if mark else "open",
              "data-at": mark["labeled_at"] if mark else ""}
+    age = (f'<b class="num">{waited}</b><small>일</small><span class="sr-only"> 경과</span>' if waited
+           else '<b>오늘</b><span class="sr-only"> 받음</span>')
+    text = th["summary"] or th["subject"]
+    preview = (f' data-preview="{esc(u["body"])}" data-preview-label="받은 메일"' if u.get("body") else "")
     return (
         f'<li class="wait{" old" if waited >= 2 else ""}{" extra" if extra else ""}" '
         + " ".join(f'{k}="{esc(v)}"' for k, v in attrs.items())
-        + f'{" hidden" if extra else ""}><div class="wh"><span class="wf">{esc(who)}</span>'
-        f'<span class="wd num">{f"{waited}일 경과" if waited else "오늘"}</span>'
-        f'{_kebab(WAIT_MENU, "wmark", "메일 메뉴")}</div>'
-        f'<p class="ws" title="{esc(th["summary"] or th["subject"])}">'
-        f'{esc(th["summary"] or th["subject"])}</p>{sub}'
-        f'<div class="wfoot"><span class="st">{esc(_mark_text(mark, "thread"))}</span>'
-        '<button type="button" class="btn undo" data-wmark="open">되돌리기</button></div></li>')
+        + f'{" hidden" if extra else ""}><span class="wage">{age}</span><div class="wb">'
+        f'<div class="wh"><b class="wn" title="{esc(th["from"])}">{esc(name)}</b>'
+        f'<span class="wo">{esc(sub)}</span></div>'
+        f'<p class="ws"{preview}>{esc(text)}</p>'
+        f'<div class="wx"><span class="wt num">{esc(fmt_dt(u["asked"]))} 받음</span>'
+        f'<button type="button" class="wgo"{"" if tasks else " hidden"}>할 일 <b class="num">{tasks}</b>건 →'
+        f'</button><span class="st">{esc(_mark_text(mark, "thread"))}</span>'
+        '<button type="button" class="btn ok wok" data-wmark="answered">답변완료</button>'
+        '<button type="button" class="btn undo" data-wmark="open">되돌리기</button></div>'
+        f'{_kebab(WAIT_MENU, "wmark", "메일 메뉴")}</div></li>')
+
+
+def _wait_tasks(m: dict) -> dict[str, int]:
+    """대화별 남은 내 할 일 줄 수 (오늘 탭 할 일 보기에 그려지는 줄과 같게 센다)."""
+    if not m["stats"]["extracted"]:
+        return {}
+    return {c["thread"]["key"]: len(c["rows"]) for c in _conversations(_merge_same(m["my_actions"]))}
 
 
 def _waiting(m: dict) -> str:
     items, handled = m["unanswered"], m.get("handled", [])
     head = ('<div class="sec-h"><h2>답을 기다리는 메일</h2>'
             '<span class="sec-m">받는사람(TO) 기준 · '
-            f'<b class="c-warn num" id="wait-cnt">{len(items)}</b></span></div>')
-    rows = "".join(_wait(u, i >= WAIT_PREVIEW) for i, u in enumerate(items))
+            f'<b class="c-warn num" id="wait-cnt">{len(items)}</b></span></div>'
+            f'<p class="note">받는사람(To)으로 받은 최근 {m["window_days"]}일 메일 중 그 뒤로 답하지 않은 대화 · '
+            '오래 기다린 순. 요약에 마우스를 올리면 받은 메일 원문이 보입니다.</p>')
+    tasks = _wait_tasks(m)
+    rows = "".join(_wait(u, i >= WAIT_PREVIEW, tasks.get(u["thread"]["key"], 0))
+                   for i, u in enumerate(items))
     more = (f'<button type="button" class="more" data-more="waits" aria-expanded="false"'
             f'{"" if len(items) > WAIT_PREVIEW else " hidden"}>'
             f'나머지 {max(len(items) - WAIT_PREVIEW, 0)}건 보기</button>')
@@ -1467,14 +1788,14 @@ def _recent_decisions(m: dict) -> str:
         f'{esc(d["date"][5:].replace("-", "/") if d["date"] else "일자 미확인")} · '
         f'{esc(d["project"])}</p></div></li>'
         for d in ds)
-    return ('<div class="sec-h gap"><h2>최근 결정사항</h2>'
-            '<span class="sec-m">전체는 프로젝트 탭</span></div>'
-            f'<ul class="rds">{rows}</ul>')
+    return ('<section class="recent-decs" aria-labelledby="rd-h"><div class="sec-h">'
+            '<h2 id="rd-h">최근 결정사항</h2><span class="sec-m">프로젝트별 전체는 아래 각 업무 묶음에</span></div>'
+            f'<ul class="rds">{rows}</ul></section>')
 
 
 def _today_tab(m: dict) -> str:
-    return (f'<div class="today"><div class="col-main">{_acts(m)}{_progress(m)}</div>'
-            f'<div class="col-side">{_waiting(m)}{_recent_decisions(m)}</div></div>')
+    """오늘 탭은 할 일 · 프로젝트별 진행만 폭 전체로. 답을 기다리는 메일은 답장 대기 탭, 결정사항은 프로젝트 탭."""
+    return f'<div class="today">{_acts(m)}{_progress(m)}</div>'
 
 
 # ── 일정 탭 (마감 달력 · 기한 직접 정하기) ─────────────────────────────────────
@@ -1486,7 +1807,7 @@ def _sit(a: dict, today: date, order: int, shown: bool) -> str:
     """
     d, th = a["deadline"], a["thread"]
     if a.get("kind") == "task":
-        tags = [_role_tag(a)] + ([f'<span class="tag">{esc(a["assignee"])}</span>']
+        tags = [_role_tag(a)] + ([f'<span class="tag">{esc(" · ".join(_names(a["assignee"])))}</span>']
                                  if a.get("assignee") else [])
     else:
         glyph, label = URG_LABEL[a["urgency"]]
@@ -2328,18 +2649,32 @@ def render_usage_html(m: dict) -> str:
     )
 
 
+def _custom_css(custom: dict[int, str]) -> str:
+    """직접 고른 프로젝트 색: 10번 칸부터 라이트 · 다크 각각 밝기를 맞춘 값(colors.tones)으로 정의한다."""
+    if not custom:
+        return ""
+    t = {n: tones(h) for n, h in custom.items()}
+    light = ";".join(f"--s{n}:{v['light']}" for n, v in t.items())
+    dark = ";".join(f"--s{n}:{v['dark']}" for n, v in t.items())
+    return (f'<style id="pc-css">:root{{{light}}}'
+            f'@media (prefers-color-scheme:dark){{:root:where(:not([data-theme="light"])){{{dark}}}}}'
+            f':root[data-theme="dark"]{{{dark}}}'
+            + "".join(f".s{n}{{background:var(--s{n})}}" for n in t) + "</style>")
+
+
 def render_html(m: dict, notice: str = "", server: dict | None = None) -> str:
     """server = {"port": 8787, "token": "..."} 이면 버튼 기록을 그 로컬 서버로 보낸다."""
     s = m["stats"]
     conf = {"port": (server or {}).get("port"), "token": (server or {}).get("token", ""),
             "labels": LABELS, "reasons": {k: list(v) for k, v in REASONS.items()},
             "analysisExclusions": EXTRACT_EXCLUSION_REASONS,
-            "groups": ACT_GROUPS, "taskAliases": m.get("task_aliases", {}),
+            "taskAliases": m.get("task_aliases", {}),
             "projectTasks": {p["name"]: p["progress_items"] for p in m["projects"]},
             "marks": MARKS, "waitPreview": WAIT_PREVIEW, "unclassified": UNCLASSIFIED,
             # 일정 탭: 기한 등급은 서버의 오늘(KST) 기준으로 센다
             "today": m["today"].isoformat(), "week": SCHEDULE_WEEK, "cap": SCHEDULE_CAP,
-            "glyphs": GLYPH, "holidays": HOLIDAYS}
+            "glyphs": GLYPH, "holidays": HOLIDAYS, "colorNames": list(COLOR_NAMES), "maxSlots": MAX_SLOTS,
+            "colorBands": BANDS}
     conf_json = json.dumps(conf, ensure_ascii=False).replace("<", "\\u003c")
     banner = ""
     if not s["extracted"] and s["threads"] - s.get("excluded", 0):
@@ -2360,18 +2695,22 @@ def render_html(m: dict, notice: str = "", server: dict | None = None) -> str:
                   f'<ul>{rows}</ul></section>') + banner
 
     tabs = [("tab-today", "오늘", None),
+            ("tab-wait", "답장 대기", s["unanswered"]),
             ("tab-projects", "프로젝트", s["projects_open"] + s["projects_delayed"]),
             ("tab-schedule", "일정", s["sched_badge"]),
             ("tab-blocked", "차단됨", s["blocked"])]
+    # 답장 대기 숫자는 기다리는 메일이 있으면 주황 (오늘 탭에서도 탭 줄에서 바로 보이게)
     tablist = "".join(
         f'<button class="tab" role="tab" id="b-{tid}" aria-controls="{tid}" '
         f'data-target="{tid}" aria-selected="false" tabindex="-1">{esc(label)}'
-        + (f'<span class="cnt" data-tabcnt="{tid}">{n}</span>' if n is not None else "")
+        + (f'<span class="cnt{" warn" if tid == "tab-wait" and n else ""}" data-tabcnt="{tid}">{n}</span>'
+           if n is not None else "")
         + "</button>"
         for tid, label, n in tabs)
 
     panels = {
         "tab-today": _today_tab(m),
+        "tab-wait": f'<div class="pad">{_waiting(m)}</div>',
         "tab-projects": _projects_tab(m),
         "tab-schedule": _schedule_tab(m),
         "tab-blocked": f'<div class="pad">{_blocked_tab(m)}</div>',
@@ -2381,7 +2720,7 @@ def render_html(m: dict, notice: str = "", server: dict | None = None) -> str:
         f'{panels[tid]}</section>' for tid, _, _ in tabs)
 
     return (
-        _head("메일 업무 대시보드") + "<body>"
+        _head("메일 업무 대시보드") + "<body>" + _custom_css(m.get("custom_colors") or {}) +
         f'<main class="wrap"><div class="card">{banner}{_hero(m)}{_kpis(m)}'
         '<div class="view-toolbar">'
         f'<nav class="tabs" role="tablist" aria-label="대시보드 보기">{tablist}</nav>'
@@ -2399,11 +2738,11 @@ LIGHT = """
  --ink:#1c1b18;--ink-2:#57534a;--muted:#6f6a60;
  --line:rgba(0,0,0,.08);--line-2:rgba(0,0,0,.07);--box:#c9c4b8;--switch:#ddd9cf;
  --acc:#1f6f6a;--acc-bg:#e6efee;--acc-ink:#fff;
- --warn:#b06a1e;--warn-bg:#f3e6d4;--warn-soft:#d9c59a;--crit:#b3261e;--caution:#c28a00;
+ --warn:#b06a1e;--warn-bg:#f3e6d4;--warn-soft:#d9c59a;--crit:#b3261e;--caution:#c28a00;--caution-ink:#7f5a00;
  --tag:#eeeae0;--tag-ink:#6b6252;--track:#eeeae0;--new-bg:#e6efee;--new-ink:#14514d;
  --shadow:0 1px 2px rgba(0,0,0,.04),0 10px 30px -18px rgba(0,0,0,.25);--focus:#1f6f6a;
  --s0:#898781;--s1:#2a78d6;--s2:#eb6834;--s3:#1baf7a;--s4:#eda100;
- --s5:#e87ba4;--s6:#008300;--s7:#4a3aa7;--s8:#e34948"""
+ --s5:#e87ba4;--s6:#008300;--s7:#4a3aa7;--s8:#e34948;--s9:#a64ba0"""
 
 DARK = """color-scheme:dark;
  --page:#0c1413;--card:#15201f;--side:#121c1b;--surface:#1b2927;
@@ -2412,11 +2751,11 @@ DARK = """color-scheme:dark;
  --switch:rgba(255,255,255,.2);
  --acc:#5fd2c0;--acc-bg:rgba(95,210,192,.12);--acc-ink:#0f1a19;
  --warn:#e8b476;--warn-bg:rgba(224,160,74,.18);--warn-soft:#6b5a3e;--crit:#f08a7e;
- --caution:#e8c15a;--tag:rgba(255,255,255,.08);--tag-ink:#c3d0cd;
+ --caution:#e8c15a;--caution-ink:#e8c15a;--tag:rgba(255,255,255,.08);--tag-ink:#c3d0cd;
  --track:rgba(255,255,255,.08);--new-bg:rgba(95,210,192,.18);--new-ink:#9fe7da;
  --shadow:0 1px 2px rgba(0,0,0,.3),0 10px 30px -18px rgba(0,0,0,.6);--focus:#5fd2c0;
  --s1:#3987e5;--s2:#d95926;--s3:#199e70;--s4:#c98500;--s5:#d55181;--s6:#008300;
- --s7:#9085e9;--s8:#e66767"""
+ --s7:#9085e9;--s8:#e66767;--s9:#961dae"""
 
 CSS = (":root{color-scheme:light;" + LIGHT + "}"
        '@media (prefers-color-scheme:dark){:root:where(:not([data-theme="light"])){' + DARK + "}}"
@@ -2481,6 +2820,11 @@ a.pill:hover{border-color:var(--box);background:var(--side)}
 .hero{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:24px 40px}
 .hero-t{display:flex;align-items:center;flex-wrap:wrap;gap:8px 16px;min-width:0}
 .hero .sub{overflow-wrap:anywhere}
+.brand-identity{display:flex;align-items:center;flex-wrap:wrap;gap:12px;min-width:0}
+.brand-mark{display:block;flex:none;width:auto;height:30px;color:var(--ink)}
+.brand-account{display:flex;flex-direction:column;gap:1px;min-width:0}
+.hero .brand-email{font-size:13px;line-height:1.5;color:var(--ink-2)}
+.brand-date{margin:0;font-size:12px;line-height:1.5;color:var(--muted);font-variant-numeric:tabular-nums}
 .digest-overview{display:grid;grid-template-columns:minmax(0,1.62fr) minmax(0,1fr);gap:48px;padding:0 40px 28px}
 .work-overview{min-width:0}
 .kpis{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:40px;padding:0}
@@ -2518,11 +2862,13 @@ a.pill:hover{border-color:var(--box);background:var(--side)}
 .tab[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--acc);font-weight:600}
 .cnt{display:inline-block;min-width:18px;margin-left:6px;padding:0 6px;border-radius:999px;
  background:var(--tag);color:var(--tag-ink);font-size:11px;font-weight:500;text-align:center}
+.cnt.warn{background:var(--warn-bg);color:var(--warn);font-weight:600}
 .pad{padding:28px 36px 40px}
 
-.today{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(0,1fr)}
-.col-main{padding:34px 36px 40px;border-right:1px solid var(--line);min-width:0}
-.col-side{padding:34px 36px 40px;background:var(--side);min-width:0}
+/* 오늘 탭은 한 칸 (머리 요약과 같은 40px 들여쓰기) */
+.today{padding:34px 40px 44px;min-width:0}
+.kpi-go{display:inline-block;margin-top:6px;font-size:12px;font-weight:600;color:var(--acc);text-decoration:none}
+.kpi-go:hover{text-decoration:underline;text-underline-offset:3px}
 .sec-h{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:0 0 18px}
 .sec-h.gap{margin-top:38px}
 .sec-h h2{margin:0;font-size:16px;line-height:1.2;font-weight:600}
@@ -2530,7 +2876,7 @@ a.pill:hover{border-color:var(--box);background:var(--side)}
 .note{margin:-6px 0 14px;font-size:12.5px;color:var(--muted)}
 
 .task.done .t{text-decoration:line-through;color:var(--muted)}
-.task:not([data-state="open"]) .t .rtag{opacity:.55}
+.task:not([data-state="open"])>.rtag{opacity:.55}
 .hide-done .task.done{display:none}
 
 .seg{display:inline-flex;flex-wrap:wrap;gap:2px;padding:3px;border-radius:999px;background:var(--tag)}
@@ -2541,12 +2887,139 @@ a.pill:hover{border-color:var(--box);background:var(--side)}
 #tab-today .note{margin:-8px 0 16px}
 #srv-note{margin:0 0 16px}
 .acts{display:flex;flex-direction:column;gap:12px}
-.acts .grp{display:flex;align-items:center;gap:8px;margin:14px 0 -2px;font-size:12.5px;font-weight:600;color:var(--ink-2)}
-.acts .grp:first-child{margin-top:0}
-.acts .grp::after{content:"";flex:1;height:1px;background:var(--line)}
-.grp .gn{min-width:20px;padding:1px 7px;border-radius:999px;background:var(--tag);color:var(--tag-ink);
- font-size:11px;font-weight:600;line-height:16px;text-align:center}
-.grp.lv-overdue{color:var(--crit)}.grp.lv-today{color:var(--warn)}
+/* 할 일 보기: 구역 머리(마감 있는 일 · 기한 없는 일) > 프로젝트 머리줄 > 패널(대화 줄 · 왼쪽 날짜 칸) */
+.acts-sum{margin:-6px 0 18px;font-size:12.5px;color:var(--muted)}
+.acts-sum b{color:var(--ink-2);font-weight:600}
+.acts-sum .over,.acts-sum .over b{color:var(--crit)}
+.az+.az{margin-top:32px}
+.az-h{display:flex;align-items:center;gap:8px;margin:0 0 12px;font-size:14px;font-weight:650;color:var(--ink)}
+.az-h::after{content:"";flex:1;order:1;height:1px;background:var(--line)}
+.az-n{min-width:22px;padding:1px 7px;border-radius:999px;background:var(--tag);color:var(--tag-ink);
+ font-size:11.5px;font-weight:600;line-height:18px;text-align:center}
+.az-fold{order:2;appearance:none;border:0;background:none;padding:0;font:inherit;font-size:12px;font-weight:500;
+ color:var(--muted);cursor:pointer}
+.az-fold:hover{color:var(--ink)}
+.apgs{display:flex;flex-direction:column;gap:28px}
+/* 프로젝트 머리줄: 색 네모 · 이름 · 개수 · 가는 선 · 접기 화살표(맨 끝) */
+.apg>summary{display:flex;align-items:center;gap:8px;margin:0 0 12px;padding:0;border-top:0;list-style:none;cursor:pointer;
+ user-select:none;color:var(--ink)}
+.apg:not([open])>summary{margin-bottom:0}
+.apg>summary::after{content:"";flex:1;order:3;height:1px;background:var(--line-2)}
+.apg>summary .chv{order:4;font-size:12px}
+.apg>summary:hover .chv{color:var(--ink)}
+.apg>summary .sw{flex:none;width:11px;height:11px;border-radius:3px}
+.apg>summary::-webkit-details-marker,.cv-oth>summary::-webkit-details-marker{display:none}
+.chv{display:inline-block;width:14px;flex:none;color:var(--muted);font-size:10px;text-align:center;transition:transform .15s}
+.chv::before{content:"▶"}
+/* 카드 안 접기(결정사항 · 메일 대화 · 제외한 할 일 · 답변완료한 메일 …)도 '다른 담당자' 와 같은 작은 ▶ */
+:is(.decs,.gone,.pend,.excl,.rel,.handled)>summary{list-style:none}
+:is(.decs,.gone,.pend,.excl,.rel,.handled)>summary::-webkit-details-marker{display:none}
+:is(.decs,.gone,.pend,.excl,.rel,.handled)>summary::before{content:"▶";display:inline-block;width:14px;margin-right:6px;
+ color:var(--muted);font-size:10px;text-align:center;vertical-align:1px;transition:transform .15s}
+:is(.decs,.gone,.pend,.excl,.rel,.handled)[open]>summary::before{transform:rotate(90deg)}
+.apg[open]>summary .chv,.cv-oth[open]>summary .chv{transform:rotate(90deg)}
+.apg-n{font-size:17px;font-weight:650;letter-spacing:-.01em}
+.apg-c{font-size:13px;color:var(--muted)}
+/* 패널: 대화는 줄로. 줄 사이 선은 1px 틈으로 그려 숨긴 줄이 있어도 선이 겹치지 않는다 */
+.cvs{display:flex;flex-direction:column;gap:1px;overflow:hidden;background:var(--line);border:1px solid var(--line-2);
+ border-radius:14px}
+.cv{padding:16px 18px 6px 20px;background:var(--surface)}
+.cv-b{min-width:0}
+/* 제목 위 날짜 칩: 마감 있는 일은 가장 급한 마감일 · D-day (기한 등급 색: 지남 빨강 · 오늘 주황 · 3일 안 노랑).
+   기한 없는 대화는 빈 줄 (높이 0) — 최근 메일 시각은 메일 줄에 */
+.cv-due{margin:0 0 7px}
+.cv-due:empty{margin:0}
+.cv-dc{display:inline-block;padding:3px 9px;border-radius:7px;background:var(--tag);color:var(--tag-ink);
+ font-size:12px;font-weight:600;line-height:1.35;white-space:nowrap}
+.cv-dc b{font-weight:700}
+.cv-dc.lv-overdue{background:color-mix(in srgb,var(--crit) 16%,transparent);color:var(--crit)}
+.cv-dc.lv-today{background:var(--warn-bg);color:var(--warn)}
+.cv-dc.lv-soon{background:color-mix(in srgb,var(--caution) 16%,transparent);color:var(--caution-ink)}
+/* 프로젝트 묶음 안에서는 프로젝트 이름을 뺀다 (머리줄에 있음) */
+.apg .cv-m .pj{display:none}
+@media (max-width:560px){.apg-n{font-size:16px}}
+.cv-h h3{margin:0;font-size:14.5px;line-height:1.4;font-weight:650;color:var(--ink);overflow-wrap:anywhere;
+ word-break:keep-all}
+.cv-h h3 :is(.new,.chip,.stt){vertical-align:2px}
+.cv-h h3 .stt{margin:0 0 0 6px}
+.cv-m{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;margin:4px 0 0;font-size:12px;color:var(--muted)}
+.cv-m .pj{color:var(--ink-2)}
+.cv-mail i{margin-right:5px;font-style:normal}
+.cv-m .rep{font-weight:600;color:var(--warn)}
+.cv-s{margin:8px 0 0;font-size:13px;line-height:1.6;color:var(--ink-2)}
+.cv-s .tx{margin:0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:keep-all}
+.cv-s.open .tx{display:block}
+.cv-l{margin-right:6px;color:var(--muted);font-weight:500}
+.cv-more{display:none;appearance:none;border:0;background:none;padding:0;margin-top:2px;font:inherit;font-size:12px;
+ color:var(--muted);cursor:pointer}
+.cv-s.clip .cv-more,.cv-s.open .cv-more{display:inline-block}
+.cv-more:hover{color:var(--ink)}
+.tks{margin-top:10px;border-top:1px solid var(--line)}
+.tk{display:flex;flex-wrap:wrap;align-items:flex-start;gap:4px 10px;padding:9px 0 8px;border-bottom:1px dashed var(--line)}
+.tk:last-child{border-bottom:0}
+.ck{appearance:none;display:grid;place-items:center;flex:none;width:18px;height:18px;margin:2px 0 0;
+ border:1.5px solid var(--box);border-radius:5px;background:var(--surface);cursor:pointer}
+.ck:hover:not(:disabled){border-color:var(--acc)}
+.ck:checked{background:var(--acc);border-color:var(--acc)}
+.ck:checked::after{content:"";width:5px;height:9px;border:solid var(--acc-ink);border-width:0 2px 2px 0;
+ transform:translateY(-1px) rotate(45deg)}
+.ck:disabled{cursor:not-allowed;opacity:.5}
+.tk-b{flex:1;min-width:0}
+.tk-t{margin:0;font-size:14px;line-height:1.5;font-weight:500;color:var(--ink);overflow-wrap:anywhere;word-break:keep-all}
+.tk-b .dup{display:block;margin-top:2px;font-size:11.5px;color:var(--muted)}
+.tk-b .sim{margin-top:4px}
+.tk-r{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:6px 8px;flex:none;margin-top:1px}
+.tk .due{padding:2px 8px;border-radius:999px;background:var(--tag);font-size:12px;font-weight:600;white-space:nowrap}
+.tk .due.lv-overdue{background:color-mix(in srgb,var(--crit) 15%,transparent)}
+.tk .due.lv-today{background:var(--warn-bg)}
+.tk .due.lv-soon{color:var(--caution)}
+.tk .due.lv-later{font-weight:500;color:var(--ink-2)}
+.tk .ctl{gap:2px;opacity:0;transition:opacity .12s}
+.tk:hover .ctl,.tk:focus-within .ctl,.tk:not([data-state="open"]) .ctl{opacity:1}
+@media (hover:none){.tk .ctl{opacity:1}}
+.gh{appearance:none;padding:2px 7px;border:0;border-radius:6px;background:none;font:inherit;font-size:12px;
+ color:var(--muted);cursor:pointer;white-space:nowrap}
+.gh:hover:not(:disabled){background:var(--tag);color:var(--ink)}
+.gh:disabled{cursor:not-allowed;opacity:.5}
+.tk .undo,.tk:not([data-state="open"]) .gh:not(.undo){display:none}
+.tk:not([data-state="open"]) .undo{display:inline-block}
+.tk[data-state="done"] .tk-t{color:var(--muted);text-decoration:line-through;text-decoration-color:var(--box)}
+.tk[data-state="excluded"] .tk-t,.tk[data-state="deleted"] .tk-t{color:var(--muted)}
+.tk:not([data-state="open"]) .due{opacity:.45}
+.tk[data-state="done"] .st{background:var(--acc-bg);color:var(--acc)}
+.tk .why{flex-basis:100%;margin:4px 0 2px 28px;padding-top:10px}
+.cv-oth{margin:2px 0}
+.cv-oth>summary{display:inline-flex;align-items:center;gap:6px;padding:4px 6px 4px 0;list-style:none;font-size:12px;
+ color:var(--muted);cursor:pointer}
+.cv-oth>summary:hover{color:var(--ink)}
+.cv-oth .late{font-weight:600;color:var(--crit)}
+.cv-oth>div{display:grid;grid-template-columns:max-content minmax(0,1fr) max-content;gap:5px 14px;align-items:baseline;
+ margin:2px 0 6px 20px;font-size:12.5px;line-height:1.6;color:var(--ink-2);word-break:keep-all}
+.cv-fin{display:none;margin:6px 0 4px;font-size:12px;color:var(--acc)}
+.cv.allset>*{opacity:.6}      /* 줄 바탕은 그대로 둬야 패널 선 색이 비치지 않는다 */
+.cv.allset:hover>*,.cv.allset:focus-within>*{opacity:1}
+.cv.allset .cv-fin{display:block}
+/* 넓은 화면: 왼쪽 메일(제목 · 메일 줄 · 현황 · 다른 담당자) | 오른쪽 내 할 일. 요약 한 줄 길이는 좁던 때와 비슷하게
+   두고 카드 높이를 줄인다. 할 일 칸이 좁으니 기한은 글 아래 줄로, 제외 · 업무삭제는 올렸을 때 오른쪽 위에 겹쳐 띄운다.
+   날짜 칩 줄(1행)은 두 칸에 걸친 머리라 할 일 칸은 제목 높이(2행)부터. 기한 없는 대화는 이 줄 높이가 0 */
+@media (min-width:901px){
+ .cv{padding-bottom:12px}
+ .cv-b{display:grid;grid-template-columns:minmax(0,1.12fr) minmax(0,1fr);grid-template-rows:auto auto auto auto auto 1fr;
+  column-gap:28px;align-items:start}
+ .cv-b>*{grid-column:1}
+ .cv-b>.cv-due{grid-column:1/-1;grid-row:1}
+ .cv-b>.tks{grid-column:2;grid-row:2/-1;align-self:stretch;margin:-6px 0;padding-left:22px;border-top:0;
+  border-left:1px solid var(--line)}
+ .cv-oth>summary{border-top:0}
+ .tk-r{flex-basis:100%;justify-content:flex-start;padding-left:28px}
+ .tk-r .due:empty{display:none}
+}
+@media (min-width:901px) and (hover:hover){
+ .tk{position:relative}
+ .tk .ctl{position:absolute;top:6px;right:0;padding:2px 0 2px 18px;
+  background:linear-gradient(90deg,transparent,var(--surface) 16px)}
+}
+.hide-done .tk[data-state="done"],.hide-done .cv.alldone{display:none}
 .act{padding:18px 22px 16px 20px;background:var(--surface);border:1px solid var(--line-2);border-left-width:3px;border-radius:12px}
 .act[data-state="open"][data-level="overdue"]{border-left-color:var(--crit)}
 .act[data-state="open"][data-level="today"]{border-left-color:var(--warn)}
@@ -2567,17 +3040,13 @@ a.pill:hover{border-color:var(--box);background:var(--side)}
 [data-manual="1"] .man{display:inline-block}
 .act .t{font-size:15px;line-height:1.45;font-weight:600;color:var(--ink)}
 .tg .pj{margin-left:auto;color:var(--ink-2)}
-.ctx{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:8px 16px;margin:12px 0 0;padding:12px 0 0;
- border-top:1px dashed var(--line);font-size:12.5px;line-height:1.6}
-.ctx>div{display:contents}
-.ctx dt{color:var(--muted);font-weight:500;white-space:nowrap}
-.ctx dd{margin:0;min-width:0;color:var(--ink-2)}
-.act:not([data-state="open"]) .ctx{display:none}
 .stt{display:inline-block;margin-right:7px;padding:0 6px;border-radius:4px;background:var(--tag);color:var(--tag-ink);
  font-size:11px;font-weight:600;line-height:18px;vertical-align:1px}
 .stt.s-hold{background:var(--warn-bg);color:var(--warn)}.stt.s-done{background:var(--acc-bg);color:var(--acc)}
-.oth{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px}.oth+.oth{margin-top:4px}
-.oth .nm{color:var(--ink);font-weight:500}.oth.more{font-size:12px;color:var(--muted)}
+/* 다른 담당자 한 줄 = 바깥 칸(이름 | 할 일 | 기한)을 그대로 쓰는 subgrid. 이름 길이와 상관없이 할 일이 한 선에서 시작 */
+.oth{display:grid;grid-column:1/-1;grid-template-columns:subgrid;align-items:baseline;margin:0}
+.oth>.who{grid-column:1}.oth>.rx{grid-column:2}.oth>.dl{grid-column:3;font-size:12px}
+.oth .nm{color:var(--ink);font-weight:500}.oth.more{display:block;font-size:12px;color:var(--muted)}
 .tf{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;margin-top:14px;font-size:12px;color:var(--muted)}
 .mail{position:relative;display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%;margin:0 auto 0 -7px;
  padding:4px 8px 4px 7px;border-radius:6px;color:var(--ink-2);cursor:help}
@@ -2625,9 +3094,13 @@ a.pill:hover{border-color:var(--box);background:var(--side)}
 .sit:not([data-state="open"]) .ctl .btn:not(.undo){display:none}
 .act:not([data-state="open"]) .undo,.task:not([data-state="open"]) .undo,
 .sit:not([data-state="open"]) .undo{display:inline-block}
-.why{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:12px;padding-top:12px;border-top:1px dashed var(--line)}
+/* 제외 · 업무삭제 사유: 줄 아래 점선 밑, 고르는 칸(.why-p)은 오른쪽 — 누른 버튼 밑 */
+.why{display:flex;flex-wrap:wrap;align-items:center;gap:8px 24px;margin-top:12px;padding-top:12px;
+ border-top:1px dashed var(--line)}
+.why-p{display:flex;flex:0 1 auto;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:6px;max-width:100%;
+ margin-left:auto}
 .why-l{margin-right:4px;font-size:12px;font-weight:600;color:var(--ink-2)}
-.why-note{flex-basis:100%;font-size:12px;color:var(--muted)}
+.why-note{flex:1 1 240px;min-width:0;font-size:12px;line-height:1.55;color:var(--muted);word-break:keep-all}
 .why .btn.skip{color:var(--muted)}
 .toast{position:fixed;left:50%;bottom:24px;z-index:10;display:flex;align-items:center;gap:12px;max-width:calc(100% - 32px);
  transform:translateX(-50%);padding:10px 12px 10px 16px;border-radius:12px;background:var(--ink);color:var(--card);
@@ -2668,30 +3141,62 @@ a.pill:hover{border-color:var(--box);background:var(--side)}
 .fill{display:block;width:0;height:100%;border-radius:inherit;background:var(--acc);transition:width .2s}
 .pv{text-align:right;font-size:12px;font-weight:500;color:var(--ink-2)}
 
-.waits{display:flex;flex-direction:column;gap:14px}
-.wait{padding:18px 20px;background:var(--surface);border:1px solid var(--line-2);border-left:3px solid var(--warn-soft);border-radius:12px}
-.wait.old{border-left-color:var(--warn)}
+/* 답장 대기 탭: 경과일 배지 | 보낸 사람 · 소속 | 요약 두 줄 | 받은 시각 · 할 일 → | 답변완료 | ⋮ (좁으면 위아래로).
+   줄은 오늘 탭 대화 카드처럼 한 패널 안에 1px 틈으로 나눈다 */
+.waits{display:flex;flex-direction:column;gap:1px;overflow:hidden;background:var(--line);border:1px solid var(--line-2);
+ border-radius:14px}
+.waits:empty{display:none}
+.wait{display:grid;grid-template-columns:44px minmax(0,1fr);align-items:center;gap:18px;padding:14px 14px 14px 16px;
+ background:var(--surface)}
 .wait p{margin:0}
-.wh{display:flex;align-items:center;justify-content:space-between;gap:10px}
-.wf{flex:1 1 auto;min-width:0;font-size:12.5px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.wd{flex:none;font-size:11px;color:var(--muted)}.wait.old .wd{color:var(--warn);font-weight:500}
-.wh .kb{margin-right:-8px}
-.wfoot{display:none;align-items:center;justify-content:space-between;gap:8px;margin-top:12px}
-.wait:not([data-wstate="open"]) .wfoot{display:flex}
-.wait:not([data-wstate="open"]) .kb{display:none}
-.wait:not([data-wstate="open"]){border-left-color:var(--line);background:var(--side)}
+.wage{display:flex;flex-direction:column;align-items:center;justify-content:center;height:42px;border-radius:10px;
+ background:var(--tag);color:var(--tag-ink);line-height:1}
+.wage b{font-size:17px;font-weight:700}.wage small{margin-top:3px;font-size:10.5px;font-weight:600}
+.wait[data-lv="0"] .wage b{font-size:12px;font-weight:600}
+.wait[data-lv="1"] .wage{background:color-mix(in srgb,var(--caution) 16%,transparent);color:var(--caution-ink)}
+.wait[data-lv="2"] .wage{background:var(--warn-bg);color:var(--warn)}
+.wb{display:grid;grid-template-columns:minmax(0,170px) minmax(0,1fr) auto 28px;align-items:center;column-gap:20px;
+ min-width:0}
+.wh{display:flex;flex-direction:column;gap:2px;min-width:0}
+.wn{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wo{font-size:11.5px;line-height:1.45;color:var(--muted);word-break:keep-all;overflow-wrap:anywhere}
+.wo:empty{display:none}
+.wb>.kb{justify-self:end;margin-right:-6px}
+.wait .ws{font-size:13px;line-height:1.55;color:var(--ink-2);display:-webkit-box;-webkit-line-clamp:2;
+ -webkit-box-orient:vertical;overflow:hidden;word-break:keep-all}
+/* 받은 시각 위 · 할 일 → 아래, 오른쪽에 답변완료(표시한 줄은 상태 · 되돌리기) */
+.wx{display:grid;grid-template-columns:104px 76px;align-items:center;gap:2px 16px;font-size:11.5px;color:var(--muted);
+ white-space:nowrap}
+.wt{grid-column:1;grid-row:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.wgo{grid-column:1;grid-row:2;justify-self:start}
+.wx .st{grid-column:1;grid-row:1/span 2;justify-self:start}
+.wgo{appearance:none;padding:0;border:0;background:none;font:inherit;font-weight:600;color:var(--acc);cursor:pointer}
+.wgo:hover{text-decoration:underline;text-underline-offset:3px}
+.wgo:focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:4px}
+.wx .btn{grid-column:2;grid-row:1/span 2;justify-self:end;padding:3px 10px;font-size:11.5px}
+.wx .undo{display:none}
+.wait .wok{opacity:0;transition:opacity .12s}
+.wait:hover .wok,.wait:focus-within .wok{opacity:1}
+@media (hover:none){.wait .wok{opacity:1}.wait .wok:disabled{opacity:.5}}
+.wait:hover .wok:disabled,.wait:focus-within .wok:disabled{opacity:.5}
+.wait:not([data-wstate="open"]){background:var(--side)}
+.wait:not([data-wstate="open"]) .wage{background:var(--tag);color:var(--muted)}
 .wait:not([data-wstate="open"]) .ws{color:var(--muted)}
-.wfoot .undo{display:inline-block}
+.wait:not([data-wstate="open"]) :is(.kb,.wt,.wgo,.wok){display:none}
+.wait:not([data-wstate="open"]) .undo{display:inline-block}
+.cv.flash{animation:cv-flash 1.6s ease-out}   /* 패널이 바깥을 잘라 안쪽 테두리로 */
+@keyframes cv-flash{from{box-shadow:inset 0 0 0 2px var(--acc)}to{box-shadow:inset 0 0 0 2px transparent}}
+@media (prefers-reduced-motion:reduce){.wok{transition:none}.cv.flash{animation:none;box-shadow:inset 0 0 0 2px var(--acc)}}
 .handled summary{padding:14px 0 0;border-top:0;font-size:12.5px;color:var(--muted)}
 .handled .waits{margin-top:12px}
-.wait .ws{margin-top:9px;font-size:13px;line-height:1.5;color:var(--ink-2);
- display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
-.wait .wsub{margin-top:6px;font-size:11.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .more{display:block;margin:12px auto 0;padding:4px 10px;border:0;border-radius:6px;background:none;
  font:inherit;font-size:12px;font-weight:500;color:var(--muted);cursor:pointer}
 .more:hover{color:var(--ink)}
 
-.rds{display:flex;flex-direction:column;gap:16px}
+/* 최근 결정사항: 프로젝트 탭 맨 위, 넓으면 두 줄씩 */
+.recent-decs{margin:0 0 28px;padding:0 0 26px;border-bottom:1px solid var(--line)}
+.recent-decs .sec-h{margin-bottom:14px}
+.rds{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 40px}
 .rd{display:flex;gap:13px}.rd p{margin:0}
 .av{flex:none;display:grid;place-items:center;width:30px;height:30px;border-radius:50%;
  background:var(--tag);color:var(--tag-ink);font-size:11px;font-weight:600}
@@ -2706,25 +3211,60 @@ a.pill:hover{border-color:var(--box);background:var(--side)}
 .client-h h2{margin:0;font-size:15px;line-height:1.2;font-weight:600}
 .client-h .sw{width:10px;height:10px;border-radius:3px}
 .client-h .cnt{margin-left:2px}
-.projs{display:grid;gap:10px}
-.proj{background:var(--surface);border:1px solid var(--line-2);border-radius:12px;overflow:hidden}
-details.proj>summary.proj-h{display:flex;align-items:center;gap:10px;padding:14px 14px 14px 16px;border-top:0;
+/* 프로젝트는 상자 없이 머리줄(펼침 화살표 · 색 막대 · 이름 · 가는 선 · 숫자 · ⋮). 펼치면 색 막대가 아래로 이어지는
+   세로줄(.proj-b 왼쪽 선, 프로젝트 색 --pc)로 그 프로젝트의 업무 상자들을 묶는다 — 상자 안에 상자를 만들지 않게 */
+.projs{display:grid;gap:28px}
+details.proj>summary.proj-h{display:flex;align-items:center;gap:8px;padding:2px 0;border-top:0;
  list-style:none;font-size:14px;color:var(--ink);cursor:pointer}
 .proj-h::-webkit-details-marker{display:none}
 .proj-h::before{content:"";flex:none;width:7px;height:7px;margin:0 3px 0 1px;border-right:1.5px solid var(--muted);
  border-bottom:1.5px solid var(--muted);transform:rotate(-45deg);transition:transform .15s}
+.proj-h::after{content:"";flex:1;order:1;min-width:24px;height:1px;background:var(--line)}
 .proj[open]>.proj-h::before{transform:rotate(45deg)}
-.proj[open]>.proj-h{border-bottom:1px solid var(--line)}
-.proj-h:hover{background:var(--side)}
-.proj-h h3{margin:0;font-size:15.5px;font-weight:600}.pm{margin-left:auto;color:var(--muted);font-size:12px}
-.proj-h .st{margin-left:4px}
+.proj[open]>.proj-h{margin-bottom:6px}
+.proj-h:hover h3{color:var(--acc)}
+.proj-h h3{margin:0;font-size:16px;font-weight:600}
+.proj-h .pm{order:2;color:var(--muted);font-size:12px}
+.proj-h .st{order:3;margin-left:4px}
+.proj-h .kb{order:4}
+/* 프로젝트 색: 머리줄 색 막대는 버튼 — 누르면 색 고르는 창(.cp). 올리면 막대가 커지고 테두리 */
+.proj-h>.bar{appearance:none;flex:none;padding:0;border:0;cursor:pointer;transition:transform .12s,box-shadow .12s}
+.proj-h>.bar:hover:not(:disabled),.proj-h>.bar.on{transform:scaleX(1.5);
+ box-shadow:0 0 0 3px color-mix(in srgb,var(--pc,var(--line)) 35%,transparent)}
+.proj-h>.bar:focus-visible{outline:2px solid var(--focus);outline-offset:3px}
+.proj-h>.bar:disabled{cursor:default}
+.cp{position:fixed;z-index:20;width:304px;padding:14px 14px 12px;background:var(--card);color:var(--ink);
+ border:1px solid var(--line-2);border-radius:14px;box-shadow:0 18px 40px -16px rgba(0,0,0,.55),0 2px 6px rgba(0,0,0,.18)}
+.cp-h{display:flex;align-items:center;gap:8px;margin:0 0 12px;font-size:13px}
+.cp-h b{font-weight:650}
+.cp-h span{margin-left:auto;font-size:12px;color:var(--muted)}
+.cp-dot{flex:none;width:10px;height:10px;border-radius:3px}
+.cp-sws{display:grid;grid-template-columns:repeat(9,24px);justify-content:space-between;row-gap:6px}
+.cp-sw{position:relative;appearance:none;width:24px;height:24px;padding:0;border:0;border-radius:50%;cursor:pointer;
+ box-shadow:inset 0 0 0 1px rgba(0,0,0,.12);transition:transform .1s}
+.cp-sw:hover{transform:scale(1.12)}
+.cp-sw:focus-visible{outline:2px solid var(--focus);outline-offset:3px}
+.cp-sw[aria-checked="true"]{box-shadow:0 0 0 2px var(--card),0 0 0 4px var(--ink)}
+.cp-sw[aria-checked="true"]::after{content:"";position:absolute;left:50%;top:45%;width:5px;height:10px;margin:-6px 0 0 -3px;
+ border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg)}
+.cp-used{position:absolute;left:50%;bottom:-8px;width:4px;height:4px;margin-left:-2px;border-radius:50%;background:var(--muted)}
+.cp-note{display:flex;align-items:center;gap:6px;margin:14px 0 0;font-size:11.5px;line-height:1.5;color:var(--muted)}
+.cp-note .cp-used{position:static;flex:none;margin:0}
+.cp-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:12px;padding-top:11px;
+ border-top:1px solid var(--line)}
+.cp-auto{appearance:none;padding:4px 10px;border:1px solid var(--line);border-radius:999px;background:none;font:inherit;
+ font-size:12px;color:var(--ink-2);cursor:pointer}
+.cp-auto:disabled{opacity:.45;cursor:default}
+.cp-pick{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-2);cursor:pointer}
+.cp-pick input{width:28px;height:22px;padding:0;border:1px solid var(--line);border-radius:6px;background:none;cursor:pointer}
 .bar{display:block;width:4px;height:20px;border-radius:2px}
 .s0{background:var(--s0)}.s1{background:var(--s1)}.s2{background:var(--s2)}.s3{background:var(--s3)}
 .s4{background:var(--s4)}.s5{background:var(--s5)}.s6{background:var(--s6)}.s7{background:var(--s7)}
-.s8{background:var(--s8)}
+.s8{background:var(--s8)}.s9{background:var(--s9)}
 .sw{display:inline-block;width:8px;height:8px;border-radius:2px}
-/* 프로젝트 안쪽은 한 단계 가라앉힌 바탕, 업무 묶음은 그 위에 뜬 카드 한 장씩 */
-.proj-b{display:grid;gap:10px;padding:12px;background:var(--side)}
+/* 펼친 프로젝트 안: 세로줄(머리줄 색 막대 아래로 맞춤) 오른쪽에 업무 묶음 카드 한 장씩 */
+.proj-b{display:grid;gap:10px;margin-left:19px;padding:6px 0 2px 18px;
+ border-left:4px solid color-mix(in srgb,var(--pc,var(--line)) 55%,transparent)}
 .work{background:var(--surface);border:1px solid var(--line);border-radius:10px;box-shadow:0 1px 2px rgba(0,0,0,.05)}
 .work-h{display:flex;align-items:center;flex-wrap:wrap;gap:6px 8px;padding:11px 16px;border-bottom:1px solid var(--line);
  border-radius:9px 9px 0 0;background:color-mix(in srgb,var(--tag) 60%,transparent)}
@@ -2741,11 +3281,24 @@ h4.sec{margin:22px 0 10px;font-size:13px;color:var(--ink)}
 .tasks .task,.dec{padding:8px 0;border-bottom:1px solid var(--line)}
 .tasks .task:last-child,.dec:last-child{border-bottom:0}
 .tasks .task .t{margin:0;font-size:13.5px;line-height:1.5;color:var(--ink)}
-.tasks .task .th{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 6px}
-.tasks .task .meta{margin-left:0}
+/* 업무 줄: 역할 태그는 같은 폭 왼쪽 칸(가장 긴 '수정·디자인' 기준, 더 긴 태그는 그 줄만 넓힘) |
+   문구 · 넘친 둘째 줄 · 담당자 줄은 오른쪽 칸의 같은 선에서 시작 */
+.tasks .task{display:grid;grid-template-columns:minmax(66px,max-content) minmax(0,1fr);column-gap:10px;align-items:start}
+/* 제외 · 업무삭제 사유 줄은 태그 · 글 두 칸에 걸친다 — 태그 칸에 들어가면 그 너비만큼 태그 칸이 넓어져 글이 밀린다 */
+.tasks .task>.why{grid-column:1/-1;min-width:0}
+.tasks .task>.rtag{margin:0;text-align:center}
+.tb{min-width:0}
+.tasks .task .th{display:flex;flex-wrap:wrap;align-items:flex-start;gap:2px 6px}
+.tasks .task .th>.new{margin-top:2px}.tasks .task .th>.chip{margin-top:1px}
+/* 담당자 · 소속 · 기한 · 표시 상태 · 버튼은 세로 가운데. 소속 칩과 표시 상태 칩은 같은 20px 높이 */
+.tasks .task .meta{align-items:center;margin:5px 0 0}
+.tasks .task .who{align-items:center}.tasks .task .org{line-height:18px}
 .task .ctl{margin-left:auto}
 .task .btn{padding:3px 9px;font-size:11.5px}
 .task .st:empty{display:none}
+.task .st{padding:0 8px;font-size:11px;line-height:20px}
+.task[data-state="done"] .st{background:var(--acc-bg);color:var(--acc)}
+.task:not([data-state="open"]) .meta .dl{display:none}     /* 완료 · 제외한 일에 'N일 지남' 경고는 남기지 않음 */
 .gone summary{padding:8px 18px;color:var(--muted);font-size:12px;cursor:pointer}
 .gone .tasks .task .t{color:var(--muted)}
 .meta{display:flex;flex-wrap:wrap;gap:4px 10px;margin:3px 0 0 27px;color:var(--muted);font-size:12px;min-width:0}
@@ -2766,7 +3319,7 @@ i.crit{color:var(--crit)}i.serious{color:var(--warn)}i.warn{color:var(--caution)
 .who{display:inline-flex;gap:4px;align-items:baseline;color:var(--ink-2)}
 .who .none{color:var(--muted)}
 .org{font-size:11px;padding:0 5px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
-.decs .ds{margin-left:6px;color:var(--muted);font-size:12px}
+.decs .ds{margin-left:4px;color:var(--muted);font-size:12px}
 .dec-g{padding:2px 18px 8px}
 .dec-by{display:flex;align-items:baseline;gap:6px;margin:6px 0 0;font-size:13px;font-weight:600}
 .dec-by .none,.dd .none{color:var(--muted);font-weight:400}
@@ -2971,9 +3524,18 @@ a.btn{display:inline-block;text-decoration:none}
 @media (max-width:900px){
  .digest-overview{grid-template-columns:minmax(0,1fr);gap:24px}
  .kpis{gap:24px}
- .today{grid-template-columns:minmax(0,1fr)}
  .sch-body{grid-template-columns:minmax(0,1fr)}
- .col-main{border-right:0;border-bottom:1px solid var(--line)}
+ .rds{grid-template-columns:minmax(0,1fr)}
+ /* 답장 대기 줄: 이름 · 소속 + ⋮ / 요약 / 받은 시각 · 할 일 → · 답변완료 */
+ .wait{gap:12px;padding:12px 12px 10px}
+ .wb{grid-template-columns:minmax(0,1fr) 28px;row-gap:3px}
+ .wh{flex-direction:row;align-items:baseline;gap:6px}
+ .wn{flex:none;max-width:62%}
+ .wo{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+ .wb>.kb{grid-column:2;grid-row:1}
+ .wait .ws,.wx{grid-column:1/-1}
+ .wx{display:flex;gap:8px;min-height:26px}
+ .wx .btn{margin-left:auto}
  .hero-side{align-items:flex-start}
  .itiles{grid-template-columns:repeat(2,minmax(0,1fr))}
  .usage-body{padding:4px 24px 30px}
@@ -2991,19 +3553,21 @@ a.btn{display:inline-block;text-decoration:none}
  .view-toolbar .switch{margin:8px 20px 12px 0;margin-left:auto}
  .card>.banner:first-child{padding:8px 20px}
  .tabs{padding:0 12px}
- .col-main,.col-side,.pad{padding:24px 18px 30px}
+ .today,.pad{padding:24px 18px 30px}
  .act{padding:16px}
- .ctx{grid-template-columns:minmax(0,1fr);gap:0}
- .ctx dd{margin-bottom:8px}.ctx>div:last-child dd{margin-bottom:0}
- .proj-b{gap:8px;padding:8px}
+ .apg>.cvs{padding-left:0}
+ .cv{padding:12px 14px 6px}
+ .tk-r{width:100%;padding-left:28px;justify-content:flex-start}
+ .proj-b{gap:8px;margin-left:0;padding:6px 0 2px 12px;border-left-width:3px}
  .work-h .wm{margin-left:0;white-space:normal}
  #tab-today .sec-h:first-child{flex-wrap:wrap}
  .pgo{grid-template-columns:minmax(0,1fr) auto;gap:8px 12px;padding:14px 4px 14px 16px}
  .pgo .track{grid-column:1/-1;grid-row:2}
  .prow>.kb{padding-right:10px}
  details.proj>summary.proj-h{flex-wrap:wrap;row-gap:4px}
+ .proj-h::after{display:none}
  .proj-h h3{flex:1 1 0;min-width:0}
- .pm{order:5;margin-left:22px;width:100%}
+ .proj-h .pm{order:5;flex-basis:100%;padding-left:31px}
  .ss{flex:1 1 40%;justify-content:space-between}
  .cd{min-height:52px;padding:3px 2px 5px;align-items:center}
  .cd .cc,.cd .cd-more,.cd-h{display:none}
@@ -3061,7 +3625,7 @@ PREVIEW_JS = r"""
     if(clipped)el.setAttribute('tabindex','0');else el.removeAttribute('tabindex');
   }
   var observer=window.ResizeObserver?new ResizeObserver(function(entries){entries.forEach(function(e){measure(e.target);});}):null;
-  document.querySelectorAll('[data-preview],.ws,.wsub,.src,.ib-s,.subj-c').forEach(function(el){
+  document.querySelectorAll('[data-preview],.ws,.src,.ib-s,.subj-c').forEach(function(el){
     if(!el.dataset.preview)el.dataset.preview=el.getAttribute('title')||el.textContent;
     if(!el.dataset.previewLabel)el.dataset.previewLabel=el.classList.contains('ws')?'메일 요약':'메일 제목';
     el.removeAttribute('title');measure(el);if(observer)observer.observe(el);
@@ -3210,18 +3774,52 @@ JS = """
   document.querySelectorAll('[data-list]').forEach(function(ul){lists[ul.dataset.list]=ul;});
   function listKey(state){return state==='open'?'open':state==='done'?'done':'dropped';}
   function cards(ul){return Array.prototype.filter.call(ul.children,function(k){return k.classList.contains('act');});}
-  // 남은 일은 마감 묶음(기한 지남 · 오늘 마감 · …)마다 머리줄. 카드가 오가면 서버가 그린 것과 같은 모양으로 다시 단다
-  function regroup(){
-    var ul=lists.open;if(!ul)return;
-    Array.prototype.slice.call(ul.querySelectorAll('.grp')).forEach(function(h){h.remove();});
-    var list=cards(ul),n={};
-    list.forEach(function(li){n[li.dataset.level]=(n[li.dataset.level]||0)+1;});
-    list.forEach(function(li,i){
-      var lv=li.dataset.level;if(i&&list[i-1].dataset.level===lv)return;
-      var h=document.createElement('li'),l=document.createElement('span'),c=document.createElement('b');
-      h.className='grp lv-'+lv;h.dataset.grp=lv;l.className='gl';l.textContent=(conf.groups||{})[lv]||'';
-      c.className='gn num';c.textContent=n[lv];h.appendChild(l);h.appendChild(c);ul.insertBefore(h,li);
+  function all(root,sel){return root?Array.prototype.slice.call(root.querySelectorAll(sel)):[];}
+  function openState(li){return li.dataset.state==='open';}
+  // ── 할 일 보기: 대화 카드(.cv) 안의 줄(.tk). 표시한 줄은 그 자리에 두고(취소선 · 되돌리기) 숫자만 다시 센다 ──
+  // 묶음 · 칸의 건수, 다 정리한 대화는 흐리게, 빈 묶음 · 칸은 숨긴다 (서버가 그린 것과 같은 규칙)
+  function layoutOpen(){
+    var box=lists.open,c={open:0,today:0,over:0,cv:0};if(!box)return c;
+    var hideDone=document.body.classList.contains('hide-done');
+    function shown(cv){return !cv.hidden&&!(hideDone&&cv.classList.contains('alldone'));}
+    all(box,'.cv').forEach(function(cv){
+      var rows=all(cv,'.tk'),live=rows.filter(openState);
+      live.forEach(function(li){c.open++;if(li.dataset.level==='today')c.today++;if(li.dataset.level==='overdue')c.over++;});
+      if(live.length)c.cv++;
+      cv.hidden=!rows.length;
+      cv.classList.toggle('allset',!!rows.length&&!live.length);
+      cv.classList.toggle('alldone',!!rows.length&&rows.every(function(li){return li.dataset.state==='done';}));
+      paintDate(cv,live,rows);
     });
+    all(box,'.apg').forEach(function(g){
+      var cvs=all(g,'.cv').filter(shown),live=cvs.filter(function(cv){return !cv.classList.contains('allset');});
+      g.hidden=!cvs.length;
+      g.querySelector('.apg-c').textContent='대화 '+live.length+' · 할 일 '+all(g,'.tk[data-state="open"]').length;
+    });
+    all(box,'[data-zone]').forEach(function(z){
+      z.hidden=!all(z,'.cv').filter(shown).length;
+      z.querySelector('.az-n').textContent=all(z,'.tk[data-state="open"]').length;
+    });
+    put('sum-cv',c.cv);put('sum-n',c.open);put('sum-over-n',c.over);
+    var so=document.getElementById('sum-over');if(so)so.hidden=!c.over;
+    return c;
+  }
+  // 대화 줄 제목 위 날짜 칩 (서버 _cv_date 와 같은 모양). '마감 있는 일' 칸이면 가장 급한 마감(남은 줄 우선)을
+  // '10/16 금 · D-10' 으로, 프로젝트 묶음이면 비운다 (최근 메일 시각은 메일 줄에). 칸은 arrange() 가 정하므로 지금 놓인 칸을 따른다
+  function hasDue(li){return dueInfo(li.dataset.deadline).level!=='none';}
+  function paintDate(cv,live,rows){
+    var box=cv.querySelector('.cv-due');if(!box)return;
+    var pick=null;
+    if(cv.closest('[data-zone="due"]')){
+      var src=live.filter(hasDue);if(!src.length)src=rows.filter(hasDue);
+      src.forEach(function(li){var i=dueInfo(li.dataset.deadline);if(!pick||i.sort<pick.sort)pick=i;});
+    }
+    box.textContent='';
+    if(!pick)return;
+    var chip=document.createElement('span'),b=document.createElement('b');
+    chip.className='cv-dc lv-'+pick.level;b.className='num';
+    b.textContent=pick.day?(+pick.day.slice(5,7))+'/'+(+pick.day.slice(8,10))+' '+WD.charAt(wd(pick.day)):'기한';
+    chip.appendChild(b);chip.appendChild(document.createTextNode(' · '+pick.label));box.appendChild(chip);
   }
   function statusText(li){
     var s=li.dataset.state;
@@ -3229,25 +3827,25 @@ JS = """
     if(s==='done')return mmdd(li.dataset.at)+' 완료';
     return [conf.labels[s],li.dataset.reason,mmdd(li.dataset.at)].filter(Boolean).join(' · ');
   }
-  // 남은 일은 원래 순서(마감일순)로, 완료 · 제외는 최근 표시가 위로.
-  // 프로젝트 할 일은 오늘 탭에 완료 · 제외·삭제로만 둔다: 되돌리면 카드를 빼 두었다가 다시 표시할 때 쓴다 (ensureCard)
+  // 완료 · 제외 카드는 최근 표시가 위. 남은 일이 된 카드는 할 일 보기의 줄(.tk)이 맡으므로
+  // 빼 두었다가 다시 표시할 때 쓴다 (ensureCard)
   var parked={};
   function place(li){
-    if(li.dataset.kind==='task'&&li.dataset.state==='open'){
+    if(li.dataset.state==='open'){
       if(li.parentElement){parked[li.dataset.task]=li;li.remove();}
       return;
     }
-    if(li.dataset.kind==='task')delete parked[li.dataset.task];
+    delete parked[li.dataset.task];
     var ul=lists[listKey(li.dataset.state)];if(!ul)return;
-    var open=li.dataset.state==='open',before=null;
+    var before=null;
     for(var i=0;i<ul.children.length;i++){
       var k=ul.children[i];if(k===li||!k.classList.contains('act'))continue;
-      if(open?(+(k.dataset.order||1e9)>+(li.dataset.order||1e9)):((k.dataset.at||'')<(li.dataset.at||''))){before=k;break;}
+      if((k.dataset.at||'')<(li.dataset.at||'')){before=k;break;}
     }
     ul.insertBefore(li,before);
     li.querySelector('.st').textContent=statusText(li);
   }
-  // 프로젝트 · 일정 탭에서 표시한 프로젝트 할 일도 오늘 탭 완료 / 제외·삭제 목록에 바로 올린다.
+  // 어느 탭에서 표시하든(할 일 보기 줄 · 프로젝트 · 일정) 오늘 탭 완료 / 제외·삭제 목록에 카드를 바로 올린다.
   // 카드는 빼 두었던 것, 없으면 서버가 <template> 에 그려 둔 틀을 복사해 쓴다 (다음 갱신 때 서버가 그린 카드로 바뀐다)
   function ensureCard(src){
     var id=src.dataset.task;
@@ -3259,24 +3857,71 @@ JS = """
     li.dataset.deadline=src.dataset.deadline||'';li.dataset.manual=src.dataset.manual||'';
     paintDue(li);place(li);
   }
+  // 할 일 보기에 줄이 없는 내 할 일을 되돌리면 서버가 그려 둔 대화 카드 틀(cv-{id})에서 꺼내 넣는다.
+  // 같은 대화 카드가 있으면 줄만 그 안에, 없으면 카드째 넣고 arrange() 가 칸 · 묶음을 정한다
+  function cvOf(thread){return all(lists.open,'.cv').filter(function(cv){return cv.dataset.thread===thread;})[0];}
+  // 답장 대기 탭의 '할 일 N건 →': 할 일 보기에 같은 대화의 남은 줄이 있을 때만. 누르면 오늘 탭의 그 대화 카드로
+  function waitTasks(){
+    document.querySelectorAll('.wait[data-thread]').forEach(function(li){
+      var b=li.querySelector('.wgo'),cv=cvOf(li.dataset.thread);
+      var n=cv?all(cv,'.tk[data-state="open"]').length:0;
+      if(!b)return;b.hidden=!n;b.querySelector('b').textContent=n;
+    });
+  }
+  document.addEventListener('click',function(e){
+    var b=e.target.closest('.wgo'),cv=b&&cvOf(b.closest('.wait').dataset.thread);
+    if(!cv)return;
+    var tt=document.getElementById('b-tab-today');if(tt&&tt.getAttribute('aria-selected')!=='true')tt.click();
+    if(view!=='open')setView('open');
+    var g=cv.closest('details');if(g)g.open=true;
+    cv.classList.remove('flash');void cv.offsetWidth;cv.classList.add('flash');
+    cv.scrollIntoView({block:'center',behavior:'smooth'});
+  });
+  function groupOf(name,slot){
+    return all(lists.open,'.apg').filter(function(g){return g.dataset.pg===name;})[0]||makeGroup(name,slot);
+  }
+  function makeGroup(name,slot){      // 서버 _act_group 과 같은 모양
+    var box=lists.open&&lists.open.querySelector('[data-zone="rest"] .apgs');if(!box)return null;
+    var g=document.createElement('details'),s=document.createElement('summary'),ch=document.createElement('span');
+    var sw=document.createElement('i'),n=document.createElement('span'),c=document.createElement('span');
+    var cvs=document.createElement('div');
+    g.className='apg';g.dataset.pg=name;g.open=true;ch.className='chv';ch.setAttribute('aria-hidden','true');
+    sw.className='sw s'+(slot||0);sw.setAttribute('aria-hidden','true');n.className='apg-n';n.textContent=name;
+    c.className='apg-c num';cvs.className='cvs';
+    [ch,sw,n,c].forEach(function(x){s.appendChild(x);});g.appendChild(s);g.appendChild(cvs);
+    var last=all(box,'.apg').filter(function(x){return x.dataset.pg===conf.unclassified;})[0];
+    box.insertBefore(g,name===conf.unclassified?null:last||null);    // 미분류는 맨 아래
+    watchGroup(g);return g;
+  }
+  function ensureRow(src){
+    var id=src.dataset.task;
+    if(!lists.open||src.dataset.kind==='task'||src.dataset.state!=='open'
+      ||lists.open.querySelector('.tk[data-task="'+id+'"]'))return;
+    var tpl=document.getElementById('cv-'+id),cv=tpl&&tpl.content.firstElementChild;
+    if(!cv)return;
+    cv=cv.cloneNode(true);
+    var row=cv.querySelector('.tk'),home=cvOf(cv.dataset.thread);
+    row.dataset.state='open';row.dataset.reason='';row.dataset.at='';
+    row.dataset.deadline=src.dataset.deadline||'';row.dataset.manual=src.dataset.manual||'';
+    if(home)home.querySelector('.tks').appendChild(row);
+    else{lists.open.querySelector('[data-zone="due"] .cvs').appendChild(cv);watchCv(cv);}
+    paintDue(row);placeRow(row);arrange();
+  }
   function refresh(){
-    regroup();
-    var open=0,today=0,over=0,doneToday=0;
+    var c=layoutOpen(),doneToday=0;
     Object.keys(lists).forEach(function(key){
-      var n=cards(lists[key]).length;put('cnt-'+key,n);
+      var n=key==='open'?c.open:cards(lists[key]).length;put('cnt-'+key,n);
       var empty=document.querySelector('[data-empty="'+key+'"]');
       if(empty)empty.hidden=!(key===view&&n===0);
     });
-    if(lists.open)cards(lists.open).forEach(function(li){
-      open++;if(li.dataset.level==='today')today++;if(li.dataset.level==='overdue')over++;});
-    // 오늘 완료: 내 할 일 + 프로젝트 할 일. 프로젝트 할 일은 오늘 탭 카드와 프로젝트 탭 줄 두 곳에 있어 할 일마다 한 번만 센다
+    // 오늘 완료: 내 할 일 + 프로젝트 할 일. 같은 할 일이 여러 곳(할 일 줄 · 카드 · 프로젝트 탭 줄)에 있어 할 일마다 한 번만 센다
     var doneIds={};
-    document.querySelectorAll('.act[data-state="done"],.task[data-state="done"]').forEach(function(li){
+    document.querySelectorAll('.act[data-state="done"],.task[data-state="done"],.tk[data-state="done"]').forEach(function(li){
       if(sameDay(li.dataset.at))doneIds[li.dataset.task]=1;});
     doneToday=Object.keys(doneIds).length;
-    put('kpi-me',open);put('hl-me',open);
-    put('kpi-today',today);put('kpi-over',over);put('kpi-done',doneToday);
-    progress();drawSchedule();
+    put('kpi-me',c.open);put('hl-me',c.open);
+    put('kpi-today',c.today);put('kpi-over',c.over);put('kpi-done',doneToday);
+    progress();drawSchedule();waitTasks();
   }
   function setView(v){
     if(!lists[v])return;
@@ -3368,8 +4013,14 @@ JS = """
     }
     syncWork(work);
   }
+  // 할 일 보기 줄: 표시해도 자리는 그대로 (취소선 · 상태 + 되돌리기). 체크 상자는 완료일 때만 켠다
+  function placeRow(li){
+    var ck=li.querySelector('.ck');if(ck)ck.checked=li.dataset.state==='done';
+    li.querySelector('.st').textContent=statusText(li);
+  }
   function relocate(li){
-    if(li.classList.contains('task'))placeTask(li);else if(li.classList.contains('sit'))placeSit(li);else place(li);
+    if(li.classList.contains('task'))placeTask(li);else if(li.classList.contains('sit'))placeSit(li);
+    else if(li.classList.contains('tk'))placeRow(li);else place(li);
   }
   function apply(li,state){
     Object.keys(conf.projectTasks||{}).forEach(function(name){
@@ -3385,12 +4036,12 @@ JS = """
       o.dataset.state=li.dataset.state;o.dataset.reason=li.dataset.reason;o.dataset.at=li.dataset.at;
       relocate(o);
     });
-    if(li.dataset.kind==='task')ensureCard(li);      // 오늘 탭에 아직 카드가 없으면 완료 · 제외 목록에 올린다
+    ensureCard(li);ensureRow(li);   // 완료 · 제외 목록에 카드가, 할 일 보기에 줄이 없으면 만든다
   }
   var pendingTasks={};
   function taskBusy(id,busy){
     pendingTasks[id]=busy;
-    document.querySelectorAll('[data-task="'+id+'"] .ctl button').forEach(function(b){b.disabled=busy;});
+    document.querySelectorAll('[data-task="'+id+'"] .ctl button,[data-task="'+id+'"] .ck').forEach(function(b){b.disabled=busy;});
   }
   function mark(li,label,reason){
     if(pendingTasks[li.dataset.task])return;
@@ -3400,24 +4051,36 @@ JS = """
     apply(li,label==='open'?null:{label:label,reason:reason||'',labeled_at:new Date().toISOString()});
     taskBusy(li.dataset.task,true);
     refresh();
-    post([{task_id:li.dataset.task,label:label,reason:reason||'',snapshot:snapshot(li)}]).then(function(j){
-      apply(li,j.states&&j.states[li.dataset.task]||null);refresh();
+    // 다른 대화에 똑같이 잡혀 한 줄로 합친 할 일(data-dups)도 같은 표시로 함께 기록한다
+    var dups=(li.dataset.dups||'').split(' ').filter(Boolean),items=[
+      {task_id:li.dataset.task,label:label,reason:reason||'',snapshot:snapshot(li)}];
+    dups.forEach(function(id){
+      var o=document.querySelector('.sit[data-task="'+id+'"]');
+      items.push({task_id:id,label:label,reason:reason||'',snapshot:snapshot(o||li)});
+    });
+    function each(fn){dups.forEach(function(id){var o=document.querySelector('[data-task="'+id+'"]');if(o)fn(o,id);});}
+    post(items).then(function(j){
+      apply(li,j.states&&j.states[li.dataset.task]||null);
+      each(function(o,id){apply(o,j.states&&j.states[id]||null);});
+      refresh();
       var excluded=li.dataset.thread&&conf.analysisExclusions[label]===reason;
       toast(label==='open'?'남은 할 일로 되돌렸어요':excluded?
         '이 대화는 새 답장이 와도 AI 분석에서 제외해요':conf.labels[label]+'로 표시했어요',function(){
         mark(li,prev?prev.label:'open',prev?prev.reason:'');});
     }).catch(function(err){
-      apply(li,prev);refresh();toast('저장하지 못했어요 — '+err.message);
+      apply(li,prev);each(function(o){apply(o,prev);});refresh();toast('저장하지 못했어요 — '+err.message);
     }).finally(function(){
       taskBusy(li.dataset.task,false);
     });
   }
   var whyBox=null;
   function closeWhy(){if(whyBox){whyBox.remove();whyBox=null;}}
-  // 제외 · 업무삭제는 사유를 한 번 더 고른다 (건너뛸 수 있음)
+  // 제외 · 업무삭제는 사유를 한 번 더 고른다 (건너뛸 수 있음). 줄 아래 점선 한 줄(.why)을 차지하고,
+  // 왼쪽에 안내 문구, 오른쪽(누른 버튼 밑)에 사유 · 사유 없이 · 취소를 한 줄로. 좁으면 버튼이 아래로 내려간다
   function askWhy(li,label){
     closeWhy();
-    var box=document.createElement('div');box.className='why';
+    var wrap=document.createElement('div'),box=document.createElement('div');
+    wrap.className='why';box.className='why-p';wrap.appendChild(box);
     var title=document.createElement('span');title.className='why-l';
     title.textContent=conf.labels[label]+' 사유';box.appendChild(title);
     function add(text,cls,fn){
@@ -3428,16 +4091,23 @@ JS = """
     if(conf.analysisExclusions[label]){
       var note=document.createElement('span');note.className='why-note';
       note.textContent='“'+conf.analysisExclusions[label]+'”을 선택하면 이 대화는 새 답장이 와도 AI 분석에서 제외합니다. 되돌리면 다시 분석합니다.';
-      box.appendChild(note);
+      wrap.insertBefore(note,box);
     }
     add('사유 없이','skip',function(){mark(li,label,'');});
     add('취소','skip',closeWhy);
-    li.appendChild(box);whyBox=box;box.querySelector('button').focus();
+    li.appendChild(wrap);whyBox=wrap;box.querySelector('button').focus();
   }
   document.addEventListener('click',function(e){
     var b=e.target.closest('[data-act]');if(!b||b.disabled)return;
-    var li=b.closest('.act,.task,.sit'),act=b.dataset.act;if(!li)return;
+    var li=b.closest('.act,.tk,.task,.sit'),act=b.dataset.act;if(!li)return;
     if(act==='excluded'||act==='deleted')askWhy(li,act);else mark(li,act,'');
+  });
+  // 할 일 보기 체크 상자: 켜면 완료, 끄면 남은 일로. 상자 모양은 저장 흐름(apply → placeRow)이 맞춘다
+  document.addEventListener('change',function(e){
+    var ck=e.target;if(!ck.classList||!ck.classList.contains('ck'))return;
+    var li=ck.closest('.tk');if(!li)return;
+    ck.checked=li.dataset.state==='done';
+    mark(li,li.dataset.state==='done'?'open':'done','');
   });
   // Esc: 사유 고르기를 닫고, 떠 있는 말풍선(메일 제목 · 도움말)도 숨긴다 (포인터가 나가거나 포커스가 빠지면 다시 뜬다)
   document.addEventListener('keydown',function(e){
@@ -3495,6 +4165,7 @@ JS = """
       more.hidden=n<=cut;more.textContent=expanded?'접기':'나머지 '+(n-cut)+'건 보기';
     }
     put('wait-cnt',n);put('hl-wait',n);put('kpi-wait',n);
+    var tc=document.querySelector('[data-tabcnt="tab-wait"]');if(tc){tc.textContent=n;tc.classList.toggle('warn',n>0);}
     put('kpi-wait-c',n?(oldest?'가장 오래된 건 '+oldest+'일 경과':'모두 오늘 온 메일'):'모두 답했습니다');
     var k=document.getElementById('kpi-wait');if(k)k.classList.toggle('c-warn',n>0);
     var empty=document.getElementById('wait-empty');if(empty)empty.hidden=n>0;
@@ -3512,7 +4183,7 @@ JS = """
     }
     ul.insertBefore(li,before);
     if(st){li.classList.remove('extra');li.hidden=false;}
-    li.querySelector('.wfoot .st').textContent=markText('thread',st&&st.label,st&&st.labeled_at);
+    li.querySelector('.wx .st').textContent=markText('thread',st&&st.label,st&&st.labeled_at);
     layoutWaits();
   }
   function markThread(li,label){
@@ -3601,7 +4272,152 @@ JS = """
         function(){markProject(el,prev?prev.label:'open');});
     }).catch(function(err){applyProject(name,prev);toast('저장하지 못했어요 — '+err.message);});
   }
+  // ── 프로젝트 색: 머리줄 색 막대(또는 ⋮ '색 바꾸기…')를 누르면 고르는 창 ──────────────────────
+  // 팔레트 9색 · 자동 색으로 · 직접 고르기. 고르면 그 프로젝트 색이 쓰인 곳(머리줄 막대 · 세로줄, 오늘 탭 묶음 ·
+  // 카드, 일정 탭)을 바로 바꾸고 서버(feedback.db)에 저장한다. 직접 고른 색은 테마별로 밝기를 맞춘다
+  // (고르는 동안은 페이지가, 저장하면 서버가 같은 계산으로)
+  var colorPop=null,colorBar=null,liveCss=null,liveSlots={},customSlot={},nextCustom=100;
+  function isSlot(k){return k.length>1&&k.charAt(0)==='s'&&String(+k.slice(1))===k.slice(1);}
+  function slotOf(el){var n=0;Array.prototype.forEach.call(el.classList,function(k){if(isSlot(k))n=+k.slice(1);});return n;}
+  function setSlot(el,n){if(!el)return;
+    Array.prototype.slice.call(el.classList).forEach(function(k){if(isSlot(k))el.classList.remove(k);});el.classList.add('s'+n);}
+  function barOf(name){var d=projEls(name).filter(function(x){return x.classList.contains('proj');})[0];
+    return d?d.querySelector('.proj-h>.bar'):null;}
+  function liveColor(n,light,dark){     // 직접 고른 색 칸: 테마별 값을 페이지 맨 끝 style 로 (서버가 그린 칸보다 뒤)
+    liveSlots[n]={light:light,dark:dark||light};
+    if(!liveCss){liveCss=document.createElement('style');liveCss.id='pc-live';document.body.appendChild(liveCss);}
+    var l=[],d=[],c=[];
+    Object.keys(liveSlots).forEach(function(k){l.push('--s'+k+':'+liveSlots[k].light);d.push('--s'+k+':'+liveSlots[k].dark);
+      c.push('.s'+k+'{background:var(--s'+k+')}');});
+    liveCss.textContent=':root{'+l.join(';')+'}@media (prefers-color-scheme:dark){:root:where(:not([data-theme="light"])){'
+      +d.join(';')+'}}:root[data-theme="dark"]{'+d.join(';')+'}'+c.join('');
+  }
+  // 직접 고른 색을 테마 밝기 범위(conf.colorBands) 안으로 — nwmail/colors.py tone 과 같은 계산 (OKLCH 밝기만 옮김)
+  function okLab(hex){
+    var c=[1,3,5].map(function(i){var v=parseInt(hex.slice(i,i+2),16)/255;
+      return v<=0.04045?v/12.92:Math.pow((v+0.055)/1.055,2.4);});
+    var l=Math.cbrt(0.4122214708*c[0]+0.5363325363*c[1]+0.0514459929*c[2]),
+        m=Math.cbrt(0.2119034982*c[0]+0.6806995451*c[1]+0.1073969566*c[2]),
+        s=Math.cbrt(0.0883024619*c[0]+0.2817188376*c[1]+0.6299787005*c[2]);
+    return [0.2104542553*l+0.7936177850*m-0.0040720468*s,1.9779984951*l-2.4285922050*m+0.4505937099*s,
+      0.0259040371*l+0.7827717662*m-0.8086757660*s];
+  }
+  function toneOf(hex,band){
+    var lab=okLab(hex),L=lab[0],C=Math.hypot(lab[1],lab[2]),hue=Math.atan2(lab[2],lab[1]),rgb;
+    if(L>=band[0]&&L<=band[1])return hex;
+    L=Math.min(band[1],Math.max(band[0],L));
+    for(var k=0;k<60;k++){                   // 색역 밖이면 채도만 줄인다
+      var a=C*Math.cos(hue),b=C*Math.sin(hue),l=Math.pow(L+0.3963377774*a+0.2158037573*b,3),
+          m=Math.pow(L-0.1055613458*a-0.0638541728*b,3),s=Math.pow(L-0.0894841775*a-1.2914855480*b,3);
+      rgb=[4.0767416621*l-3.3077115913*m+0.2309699292*s,-1.2684380046*l+2.6097574011*m-0.3413193965*s,
+        -0.0041960863*l-0.7034186147*m+1.7076147010*s];
+      if(rgb.every(function(v){return v>=-1e-4&&v<=1+1e-4;}))break;
+      C*=0.9;
+    }
+    return '#'+rgb.map(function(v){v=Math.min(1,Math.max(0,v));v=v<=0.0031308?12.92*v:1.055*Math.pow(v,1/2.4)-0.055;
+      return ('0'+Math.round(v*255).toString(16)).slice(-2);}).join('');
+  }
+  function tonesOf(hex){var B=conf.colorBands||{light:[0.45,0.75],dark:[0.55,0.75]};
+    return {light:toneOf(hex,B.light),dark:toneOf(hex,B.dark)};}
+  function paintColor(name,color,tones){   // color: '' (자동) | 'sN' | '#rrggbb'
+    var bar=barOf(name);if(!bar)return;
+    var n;
+    if(!color)n=+bar.dataset.auto||0;
+    else if(color.charAt(0)==='s')n=+color.slice(1);
+    else{
+      var cur=slotOf(bar);
+      n=customSlot[name]||(cur>(conf.maxSlots||9)?cur:nextCustom++);customSlot[name]=n;
+      var t=tones&&tones.light?tones:tonesOf(color);liveColor(n,t.light,t.dark);
+    }
+    bar.dataset.color=color;
+    projEls(name).forEach(function(el){if(el.classList.contains('proj'))el.style.setProperty('--pc','var(--s'+n+')');});
+    setSlot(bar,n);
+    function squares(root){
+      root.querySelectorAll('.apg').forEach(function(g){if(g.dataset.pg===name)setSlot(g.querySelector(':scope>summary .sw'),n);});
+      root.querySelectorAll('.cv').forEach(function(cv){if(cv.dataset.pg!==name)return;cv.dataset.slot=n;
+        cv.querySelectorAll('.cv-m .pj .sw').forEach(function(s){setSlot(s,n);});});
+      root.querySelectorAll('.act,.sit').forEach(function(li){if(li.dataset.pname!==name)return;
+        if(li.dataset.slot)li.dataset.slot=n;li.querySelectorAll('.pj .sw').forEach(function(s){setSlot(s,n);});});
+    }
+    squares(document);
+    document.querySelectorAll('template').forEach(function(t){squares(t.content);});
+  }
+  function saveColor(name,color,prev){
+    var bar=barOf(name);if(prev===undefined)prev=bar?bar.dataset.color||'':'';
+    paintColor(name,color);
+    send('/api/color',{project:name,color:color}).then(function(j){
+      var c=j.color||{};paintColor(name,c.color||'',c);
+      toast(c.color?'「'+name+'」 색을 바꿨어요':'「'+name+'」 자동 색으로 되돌렸어요',
+        function(){saveColor(name,prev,c.color||'');});
+    }).catch(function(err){paintColor(name,prev);toast('저장하지 못했어요 — '+err.message);});
+  }
+  function closeColor(focus){
+    if(!colorPop)return;
+    colorPop.remove();colorPop=null;
+    if(colorBar){colorBar.classList.remove('on');colorBar.setAttribute('aria-expanded','false');if(focus)colorBar.focus();}
+    colorBar=null;
+  }
+  function hexOf(n){var v=getComputedStyle(document.documentElement).getPropertyValue('--s'+n).trim();
+    return /^#[0-9a-f]{6}$/i.test(v)?v.toLowerCase():'#888888';}
+  function openColor(bar){
+    if(colorBar===bar){closeColor(true);return;}
+    closeColor();closeMenu();
+    var name=bar.closest('.proj').dataset.project,cur=bar.dataset.color||'',n=slotOf(bar),names=conf.colorNames||[];
+    var committed=cur;                          // 저장된 색 ('직접 고르기' 미리 보기와 구분)
+    function choose(color){closeColor(true);if(color!==committed)saveColor(name,color,committed);else paintColor(name,color);}
+    var sec=bar.closest('.client'),used={};       // 같은 고객사의 다른 프로젝트가 쓰는 색
+    if(sec)sec.querySelectorAll('.proj').forEach(function(o){
+      if(o.dataset.project===name)return;var b=o.querySelector('.proj-h>.bar');
+      if(b){var s=slotOf(b);(used[s]=used[s]||[]).push(o.dataset.project);}});
+    var pop=document.createElement('div');pop.className='cp';pop.setAttribute('role','dialog');
+    pop.setAttribute('aria-label',name+' 색 바꾸기');
+    var h=document.createElement('div');h.className='cp-h';
+    var dot=document.createElement('i');dot.className='cp-dot s'+n;
+    var t=document.createElement('b');t.textContent=name;
+    var sub=document.createElement('span');sub.textContent='색 바꾸기';
+    h.appendChild(dot);h.appendChild(t);h.appendChild(sub);pop.appendChild(h);
+    var sws=document.createElement('div');sws.className='cp-sws';sws.setAttribute('role','radiogroup');
+    sws.setAttribute('aria-label','팔레트');
+    for(var i=1;i<=(conf.maxSlots||9);i++)(function(i){
+      var b=document.createElement('button');b.type='button';b.className='cp-sw s'+i;b.setAttribute('role','radio');
+      b.setAttribute('aria-checked',String(cur.charAt(0)!=='#'&&n===i));
+      b.title=(names[i]||'')+(used[i]?' · '+used[i].join(', ')+'에서 쓰는 중':'');b.setAttribute('aria-label',b.title);
+      if(used[i]){var u=document.createElement('i');u.className='cp-used';b.appendChild(u);}
+      b.addEventListener('click',function(){choose('s'+i);});
+      sws.appendChild(b);})(i);
+    pop.appendChild(sws);
+    var note=document.createElement('p');note.className='cp-note';
+    note.innerHTML='<i class="cp-used"></i>같은 고객사의 다른 프로젝트가 쓰는 색';pop.appendChild(note);
+    var row=document.createElement('div');row.className='cp-row';
+    var auto=document.createElement('button');auto.type='button';auto.className='cp-auto';
+    auto.textContent='자동 색('+(names[+bar.dataset.auto||0]||'')+')으로';auto.disabled=!cur;
+    auto.addEventListener('click',function(){choose('');});
+    var lab=document.createElement('label');lab.className='cp-pick';lab.appendChild(document.createTextNode('직접 고르기'));
+    var inp=document.createElement('input');inp.type='color';inp.value=cur.charAt(0)==='#'?cur:hexOf(n);
+    inp.addEventListener('input',function(){paintColor(name,inp.value.toLowerCase());dot.className='cp-dot s'+slotOf(bar);
+      sws.querySelectorAll('.cp-sw').forEach(function(x){x.setAttribute('aria-checked','false');});auto.disabled=false;});
+    inp.addEventListener('change',function(){var v=inp.value.toLowerCase();
+      if(v!==committed){saveColor(name,v,committed);committed=v;}});
+    lab.appendChild(inp);row.appendChild(auto);row.appendChild(lab);pop.appendChild(row);
+    var tip=document.createElement('p');tip.className='cp-note';
+    tip.textContent='직접 고른 색은 다크 · 라이트 테마에 맞게 밝기를 맞춰 씁니다.';pop.appendChild(tip);
+    document.body.appendChild(pop);colorPop=pop;colorBar=bar;
+    bar.classList.add('on');bar.setAttribute('aria-expanded','true');
+    var r=bar.getBoundingClientRect(),w=pop.offsetWidth,ph=pop.offsetHeight,top=r.bottom+8;
+    if(top+ph>window.innerHeight-8)top=Math.max(8,r.top-ph-8);
+    pop.style.top=top+'px';pop.style.left=Math.max(8,Math.min(r.left-14,window.innerWidth-w-8))+'px';
+    var first=pop.querySelector('.cp-sw[aria-checked="true"]')||pop.querySelector('.cp-sw');if(first)first.focus();
+  }
+  document.addEventListener('keydown',function(e){if(colorPop&&e.key==='Escape'){e.preventDefault();closeColor(true);}});
+  window.addEventListener('resize',function(){closeColor();});
+  window.addEventListener('scroll',function(){closeColor();},{passive:true,capture:true});
   document.addEventListener('click',function(e){
+    if(colorPop&&!e.target.closest('.cp')&&e.target.closest('.proj-h>.bar')!==colorBar)closeColor();
+    var cb=e.target.closest('.proj-h>.bar');
+    if(cb){e.preventDefault();if(!cb.disabled)openColor(cb);return;}    // 머리줄 안이라도 접고 펴지 않는다
+    var co=e.target.closest('[data-color-open]');
+    if(co){e.preventDefault();closeMenu();var cbar=co.closest('.proj-h').querySelector('.bar');
+      if(cbar&&!cbar.disabled)openColor(cbar);return;}
     var kb=e.target.closest('.kb-btn');
     if(kb){e.preventDefault();toggleMenu(kb);return;}     // 프로젝트 머리말 안이라도 접고 펴지 않는다
     var w=e.target.closest('[data-wmark]'),p=e.target.closest('[data-pmark]');
@@ -3776,7 +4592,7 @@ JS = """
       dl.title=el.dataset.deadline;dl.textContent='';dl.appendChild(ic);dl.appendChild(document.createTextNode(info.label));
       return;
     }
-    var tag=el.querySelector('.tg .due');if(tag){tag.className='due lv-'+info.level;tag.textContent=info.text;}
+    var tag=el.querySelector('.due');if(tag){tag.className='due lv-'+info.level;tag.textContent=info.text;}
     var inp=el.querySelector('.due-in');if(inp&&document.activeElement!==inp)inp.value=info.day;
   }
   function applyDue(id,st,quiet){
@@ -3786,15 +4602,27 @@ JS = """
     if(row)Object.keys(conf.projectTasks||{}).forEach(function(name){
       var it=conf.projectTasks[name][id];if(it)it.deadline=row.dataset.deadline;
     });
-    if(!quiet){reorderActs();sortSits();refresh();}
+    if(!quiet){arrange();sortSits();refresh();}
   }
-  // 남은 내 할 일은 서버와 같은 순서(마감 → 긴급도 → 새 메일)로 다시 늘어놓는다
-  function reorderActs(){
-    var ul=lists.open;if(!ul)return;
-    cards(ul).sort(function(a,b){
-      return dueInfo(a.dataset.deadline).sort-dueInfo(b.dataset.deadline).sort||urg(a)-urg(b)
-        ||(b.dataset.new==='1')-(a.dataset.new==='1')||(+a.dataset.order||0)-(+b.dataset.order||0);
-    }).forEach(function(li,i){li.dataset.order=i;ul.appendChild(li);});
+  // 기한이 바뀌면 줄 · 대화 카드를 서버와 같은 자리로: 대화 안에서는 마감 → 중요도 → 원래 순서.
+  // 기한 있는 남은 일이 있는 대화는 '마감 있는 일' 칸(가장 급한 마감순), 없으면 프로젝트 묶음(원래 순서)
+  function arrange(){
+    var box=lists.open;if(!box)return;
+    var due=box.querySelector('[data-zone="due"] .cvs');
+    function key(li){return dueInfo(li.dataset.deadline).sort;}
+    function byOrder(a,b){return (+a.dataset.order||0)-(+b.dataset.order||0);}
+    all(box,'.cv').forEach(function(cv){
+      var ul=cv.querySelector('.tks'),rows=all(ul,'.tk');
+      rows.sort(function(a,b){return key(a)-key(b)||urg(a)-urg(b)||byOrder(a,b);}).forEach(function(li){ul.appendChild(li);});
+      var live=rows.filter(openState),dated=(live.length?live:rows).filter(function(li){
+        return dueInfo(li.dataset.deadline).level!=='none';});
+      cv.dataset.due=dated.length?Math.min.apply(null,dated.map(key)):'';
+      var g=dated.length?null:groupOf(cv.dataset.pg,cv.dataset.slot),to=g?g.querySelector('.cvs'):due;
+      if(cv.parentElement!==to)to.appendChild(cv);
+    });
+    all(due,'.cv').sort(function(a,b){return (+a.dataset.due)-(+b.dataset.due)||byOrder(a,b);})
+      .forEach(function(cv){due.appendChild(cv);});
+    all(box,'.apg>.cvs').forEach(function(ul){all(ul,'.cv').sort(byOrder).forEach(function(cv){ul.appendChild(cv);});});
   }
   function sortSits(){
     var day=document.getElementById('sch-day'),none=document.getElementById('sch-none');
@@ -3876,7 +4704,7 @@ JS = """
 
   function notice(html){var n=document.getElementById('srv-note');if(n){n.innerHTML=html;n.hidden=false;}}
   function disable(title){
-    document.querySelectorAll('.act [data-act],.task [data-act],.kb-btn,.wfoot [data-wmark],.sit [data-act],.due-in,[data-due-rev]').forEach(function(b){
+    document.querySelectorAll('.act [data-act],.tk [data-act],.tk .ck,.task [data-act],.kb-btn,.proj-h>.bar,.wx [data-wmark],.sit [data-act],.due-in,[data-due-rev]').forEach(function(b){
       b.disabled=true;b.title=title;});
   }
   function isoDay(md){   // 'MM/DD' → 가장 가까운 지난 날짜 'YYYY-MM-DD'
@@ -3908,7 +4736,7 @@ JS = """
       if(!r.ok)throw new Error('HTTP '+r.status);return r.json();
     }).then(function(j){
       var states=j.states||{},moved=[],seen={};
-      document.querySelectorAll('.act,.task,.sit').forEach(function(li){
+      document.querySelectorAll('.act,.tk,.task,.sit').forEach(function(li){
         var st=states[li.dataset.task]||null;
         if((st?st.label:'open')!==li.dataset.state||(st&&st.labeled_at!==li.dataset.at))apply(li,st);
         // 파일로 열었을 때 체크해 둔 할 일(내 할 일 · 프로젝트)은 완료로 옮긴다
@@ -3920,11 +4748,11 @@ JS = """
       });
       // 일정 탭에서 직접 정한 기한도 서버 기록으로 맞춘다
       var dues=j.dues||{},fixed=0;
-      document.querySelectorAll('.act,.task,.sit').forEach(function(el){
+      document.querySelectorAll('.act,.tk,.task,.sit').forEach(function(el){
         var st=dues[el.dataset.task]||null;
         if((st?'1':'')!==(el.dataset.manual||'')||(st&&st.due!==el.dataset.deadline)){applyDue(el.dataset.task,st,true);fixed++;}
       });
-      if(fixed){reorderActs();sortSits();}
+      if(fixed){arrange();sortSits();}
       // 답을 기다리는 메일 · 프로젝트 표시도 서버 기록으로 맞춘다
       var tm=j.threads||{},pm=j.projects||{};
       document.querySelectorAll('.wait[data-thread]').forEach(function(li){
@@ -3934,6 +4762,13 @@ JS = """
       document.querySelectorAll('.proj[data-project]').forEach(function(a){
         var st=active(pm[a.dataset.project]||null,a.dataset.latest);
         if((st?st.label:'')!==(a.dataset.manualState||'')||(st&&st.labeled_at!==a.dataset.at))applyProject(a.dataset.project,st);
+      });
+      // 프로젝트 색도 서버 기록으로 맞춘다. 예전 서버(색 기록이 없음)면 색 막대만 잠근다 — 서버를 다시 켜면 풀린다
+      if(!j.colors)document.querySelectorAll('.proj-h>.bar,[data-color-open]').forEach(function(b){
+        b.disabled=true;b.title='대시보드 서버를 다시 켜면 색을 바꿀 수 있어요';});
+      else document.querySelectorAll('.proj[data-project]').forEach(function(a){
+        var b=a.querySelector('.proj-h>.bar'),c=j.colors[a.dataset.project]||{color:''};
+        if(b&&(c.color||'')!==(b.dataset.color||''))paintColor(a.dataset.project,c.color||'',c);
       });
       refresh();
       if(!moved.length)return;
@@ -3952,7 +4787,7 @@ JS = """
 
   var hide=document.getElementById('hide-done');
   try{hide.checked=localStorage.getItem('nwmail.hide')==='1'}catch(e){}
-  function applyHide(){document.body.classList.toggle('hide-done',hide.checked);drawSchedule();
+  function applyHide(){document.body.classList.toggle('hide-done',hide.checked);refresh();
     try{localStorage.setItem('nwmail.hide',hide.checked?'1':'0')}catch(e){}}
   hide.addEventListener('change',applyHide);applyHide();
 
@@ -4004,6 +4839,42 @@ JS = """
   });
   layoutWaits();layoutProjects();
 
+  // 대화 카드 현황은 두 줄까지만. 넘칠 때만 '더보기' (탭이 가려져 있다 보일 때도 ResizeObserver 로 다시 잰다)
+  var clampObs=window.ResizeObserver?new ResizeObserver(function(es){es.forEach(function(e){clamp(e.target);});}):null;
+  function clamp(tx){
+    var s=tx.parentElement;if(!s.classList.contains('open'))s.classList.toggle('clip',tx.scrollHeight>tx.clientHeight+1);
+  }
+  function watchCv(cv){all(cv,'.cv-s .tx').forEach(function(tx){clamp(tx);if(clampObs)clampObs.observe(tx);});}
+  all(lists.open,'.cv').forEach(watchCv);
+  document.addEventListener('click',function(e){
+    var b=e.target.closest('.cv-more');if(!b)return;
+    var s=b.parentElement,on=!s.classList.contains('open');
+    s.classList.toggle('open',on);b.textContent=on?'접기':'더보기';b.setAttribute('aria-expanded',String(on));
+    if(!on)clamp(s.querySelector('.tx'));
+  });
+  // 기한 없는 일의 프로젝트 묶음: 접은 묶음은 새로고침 · 다시 만들어져도 접어 둔다 (처음에는 모두 펼침)
+  var FK='nwmail.actFold',folded={},foldBtn=document.querySelector('.az-fold');
+  try{JSON.parse(localStorage.getItem(FK)||'[]').forEach(function(n){folded[n]=1;});}catch(e){}
+  function syncFold(){
+    if(!foldBtn)return;
+    var gs=all(lists.open,'.apg').filter(function(g){return !g.hidden;});
+    foldBtn.textContent=gs.length&&gs.every(function(g){return !g.open;})?'모두 펼치기':'모두 접기';
+  }
+  function watchGroup(g){
+    if(folded[g.dataset.pg])g.open=false;
+    g.addEventListener('toggle',function(){
+      if(g.open)delete folded[g.dataset.pg];else folded[g.dataset.pg]=1;
+      try{localStorage.setItem(FK,JSON.stringify(Object.keys(folded)))}catch(e){}
+      syncFold();
+    });
+  }
+  all(lists.open,'.apg').forEach(watchGroup);
+  if(foldBtn)foldBtn.addEventListener('click',function(){
+    var close=foldBtn.textContent==='모두 접기';
+    all(lists.open,'.apg').forEach(function(g){g.open=!close;});
+  });
+  syncFold();
+
   // ── 맨 아래 2depth: 메일 분류 규칙 ────────────────────────────────────────────
   // 1depth 줄을 누르면 펼치고 접는다. 펼친 줄과 고른 2depth 보기는 브라우저에 기억한다 (처음에는 모두 접힘).
   // 자동 새로고침의 스크롤 되돌리기보다 먼저 펼쳐 둬야 보던 자리로 돌아간다.
@@ -4039,8 +4910,9 @@ JS = """
   // 스크롤 위치 · 펼친 항목 · 내 할 일 보기 · 일정 탭에서 보던 달과 날짜는 유지한다 (sessionStorage).
   var SK='nwmail.view', idle=Date.now();
   function keyOf(d){
-    var p=d.closest('[data-project]'),w=d.closest('[data-work]');
-    return (p?p.dataset.project:'')+'|'+(w?w.dataset.work:'')+'|'+d.className;
+    var p=d.closest('[data-project]'),w=d.closest('[data-work]'),g=d.closest('[data-pg]'),cv=d.closest('.cv');
+    return (p?p.dataset.project:'')+'|'+(w?w.dataset.work:'')+'|'+(g?g.dataset.pg:'')+'|'
+      +(cv?cv.dataset.thread:'')+'|'+d.className;
   }
   try{var v=JSON.parse(sessionStorage.getItem(SK)||'null');
     if(v){sessionStorage.removeItem(SK);

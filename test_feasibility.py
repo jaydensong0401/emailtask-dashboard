@@ -240,6 +240,32 @@ def test_parsing() -> None:
     except Exception as e:
         check("imap 메시지 파싱", False, f"{type(e).__name__}: {e}")
 
+    print("  <메일플러그: 줄바꿈이 지워진 text/plain>")
+    try:
+        html = ('<html><body><!--MP_MAIL_START--><div><p><span>안녕하세요,</span> <span>주임님.</span></p>'
+                '<p>계약번호 : <b>P1826JX000038</b></p>\n<p>1. 매출 취소</p><p>(<a href="#">링크</a>)</p>'
+                '<table><tr><td>이름</td><td>정○국</td></tr><tr><td>모델</td><td>GV80</td></tr></table>'
+                '줄<br>바꿈</div></body></html>')
+        text = _html_to_text(html)
+        check("HTML: <span>·<b>·<a> 사이에서는 줄을 바꾸지 않음",
+              "안녕하세요, 주임님.\n계약번호 : P1826JX000038\n1. 매출 취소\n(링크)" in text, repr(text[:60]))
+        check("HTML: 표는 한 줄에 한 행, <br> 은 줄바꿈, 주석은 숨김",
+              "이름 정○국\n모델 GV80" in text and "줄\n바꿈" in text and "MP_MAIL" not in text, repr(text))
+        mp = EmailMessage()
+        mp["X-Mailer"] = "Mailplug (mailplug.com) mailer version 0.1"
+        mp.set_content("안녕하세요, 주임님.계약번호 : P1826JX0000381. 매출 취소\n(링크)")
+        mp.add_alternative(html, subtype="html")
+        body = _extract_body(email.message_from_bytes(mp.as_bytes()))
+        check("메일플러그 메일은 text/plain 대신 text/html 을 씀",
+              "P1826JX000038\n1. 매출 취소" in body, repr(body[:60]))
+        one = EmailMessage()
+        one.set_content("가" * 300)
+        one.add_alternative(html, subtype="html")
+        check("긴데 줄바꿈이 하나도 없는 text/plain 도 text/html 로 대신함",
+              _extract_body(email.message_from_bytes(one.as_bytes())).startswith("안녕하세요"))
+    except Exception as e:
+        check("메일플러그 본문 파싱", False, f"{type(e).__name__}: {e}")
+
     print("  <요약 레이어>")
     try:
         prompt = build_prompt([NaverWorksMail._to_mail(API_SAMPLE)])

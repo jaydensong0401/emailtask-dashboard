@@ -3,6 +3,7 @@
 내 할 일(오늘 탭)과 프로젝트 할 일(프로젝트 탭)을 같은 표에 둔다. kind 로 구분한다.
 답을 기다리는 메일과 프로젝트의 ⋮ 메뉴 표시는 marks 표에 따로 둔다.
 일정 탭에서 직접 정한 기한은 task_due 표에 둔다 (메일에서 뽑은 기한보다 우선).
+프로젝트 탭에서 고른 프로젝트 색은 project_color 표에 둔다 (없으면 자동 색).
 
 메일 DB(mail.db)와 따로 feedback.db 에 둔다.
 - 메일을 다시 받아도(저장소 재구성) 기록이 남는다.
@@ -42,6 +43,7 @@ MARKS = {
 MARK_KEY_MAX = 500
 DUE_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 DUE_YEARS = 3                                   # 직접 정하는 기한은 올해 앞뒤로 이만큼 안에서만
+COLOR = re.compile(r"^(s[1-9]|#[0-9a-f]{6})$")  # 프로젝트 색: 팔레트 칸 s1~s9 또는 직접 고른 #rrggbb
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS task_feedback (      -- 할 일 하나당 현재 표시 (없으면 남은 일)
@@ -102,6 +104,17 @@ CREATE TABLE IF NOT EXISTS due_log (            -- 기한을 정한 기록 전�
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id     TEXT NOT NULL,
     due         TEXT DEFAULT '',                -- 빈 값이면 메일 기한으로 되돌림
+    at          TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS project_color (      -- 프로젝트 하나당 고른 색 (없으면 자동 색)
+    project     TEXT PRIMARY KEY,
+    color       TEXT NOT NULL,                  -- s1~s9 (팔레트 칸) | #rrggbb (직접 고른 색)
+    set_at      TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS color_log (          -- 색을 바꾼 기록 전체 (자동 색으로 되돌리기 포함)
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    project     TEXT NOT NULL,
+    color       TEXT DEFAULT '',                -- 빈 값이면 자동 색으로 되돌림
     at          TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -376,6 +389,30 @@ class FeedbackStore:
                 (task_id, due, at.isoformat(), *(snap[k] for k in SNAPSHOT_FIELDS)))
         return dict(self.conn.execute(
             "SELECT * FROM task_due WHERE task_id = ?", (task_id,)).fetchone())
+
+    # ── 프로젝트 색 (프로젝트 탭 머리줄 색 막대) ───────────────────────────────
+    def colors(self) -> dict[str, str]:
+        return {r["project"]: r["color"] for r in self.conn.execute("SELECT project, color FROM project_color")}
+
+    def set_color(self, project: str, color: str, now: datetime | None = None) -> str:
+        """프로젝트 색을 정한다 (s1~s9 팔레트 칸 또는 #rrggbb). 빈 값이면 지워 자동 색으로. 저장된 색을 돌려준다."""
+        project = (project or "").strip()
+        if not project or len(project) > MARK_KEY_MAX:
+            raise FeedbackError("프로젝트 이름이 올바르지 않습니다")
+        color = (color or "").strip().lower()
+        if color and not COLOR.match(color):
+            raise FeedbackError("색 형식이 올바르지 않습니다 (s1~s9 또는 #rrggbb)")
+        at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
+        with self.conn:
+            self.conn.execute("INSERT INTO color_log (project, color, at) VALUES (?,?,?)", (project, color, at))
+            if not color:
+                self.conn.execute("DELETE FROM project_color WHERE project = ?", (project,))
+            else:
+                self.conn.execute(
+                    """INSERT INTO project_color (project, color, set_at) VALUES (?,?,?)
+                       ON CONFLICT(project) DO UPDATE SET color=excluded.color, set_at=excluded.set_at""",
+                    (project, color, at))
+        return color
 
 
 def mark_active(state: dict | None, latest_at: str | None) -> dict | None:

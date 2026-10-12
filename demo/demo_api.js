@@ -46,6 +46,14 @@
     save();return reply(200,{ok:true,state:st.dues[id]});
   }
 
+  function color(it){
+    var name=String(it.project||''),c=String(it.color||'').toLowerCase();
+    if(!name)return reply(400,{error:'요청 형식이 올바르지 않습니다'});
+    if(c&&!/^(s[1-9]|#[0-9a-f]{6})$/.test(c))return reply(400,{error:'색 형식이 올바르지 않습니다'});
+    if(!c)delete st.colors[name];else st.colors[name]={color:c};
+    save();return reply(200,{ok:true,color:{color:c}});   /* 밝기 맞춤은 페이지가 직접 한다 */
+  }
+
   var realFetch=window.fetch;
   window.fetch=function(input,opts){
     var url=new URL(typeof input==='string'?input:input.url,location.href);
@@ -60,6 +68,7 @@
     if(path==='/api/feedback')return feedback(data);
     if(path==='/api/mark')return mark(data);
     if(path==='/api/due')return due(data);
+    if(path==='/api/color')return color(data);
     if(path==='/api/filters')return reply(400,{error:'온라인 데모에서는 차단 규칙을 바꾸지 않아요. '+
       '로컬 데모 서버(python demo/serve_demo.py)에서는 실제로 바뀝니다.'});
     return reply(404,{error:'없는 주소'});

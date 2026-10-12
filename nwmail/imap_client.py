@@ -125,7 +125,13 @@ def _decode(raw: str | None) -> str:
 
 
 def _extract_body(msg: Message) -> str:
-    """multipart 를 훑어 text/plain 우선, 없으면 text/html 을 텍스트로 변환."""
+    """multipart 를 훑어 text/plain 우선, 없으면 text/html 을 텍스트로 변환.
+
+    메일플러그(누리마케팅)는 text/plain 의 줄바꿈을 대부분 지우고 보낸다. 줄이 붙으면서
+    "P1826JX000038" + "1." 이 "P1826JX0000381." 처럼 내용까지 섞이므로, 메일플러그 메일과
+    긴데 줄바꿈이 없는 text/plain 은 버리고 문단이 살아 있는 text/html 을 쓴다.
+    """
+    mailplug = "mailplug" in str(msg.get("X-Mailer", "")).lower()
     plain, html = "", ""
     for part in msg.walk():
         ctype = part.get_content_type()
@@ -145,6 +151,8 @@ def _extract_body(msg: Message) -> str:
             plain = text
         elif ctype == "text/html" and not html:
             html = text
+    if html and (mailplug or (len(plain) > 200 and "\n" not in plain.strip())):
+        plain = ""
     body = plain or _html_to_text(html)
     return re.sub(r"\n{3,}", "\n\n", body).strip()
 

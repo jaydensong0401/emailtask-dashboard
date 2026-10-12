@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterator
 
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString
 
 from .config import API_BASE
 
@@ -59,7 +59,14 @@ class Mail:
         return any(a.strip().lower() == me for a in (*self.to, *self.cc))
 
 
+# 이 태그에서만 줄을 바꾼다. <span>·<b> 같은 글자 꾸밈 사이에서 줄이 끊기지 않게
+BLOCK_TAGS = ["p", "div", "li", "tr", "table", "ul", "ol", "blockquote", "pre", "hr",
+              "h1", "h2", "h3", "h4", "h5", "h6", "section", "article", "header", "footer"]
+BLOCK = "\x00"                                         # 블록 경계 표시 (본문에 나오지 않는 글자)
+
+
 def _html_to_text(html: str) -> str:
+    """화면에 보이는 대로 텍스트를 뽑는다: 문단·<br>·표의 행마다 한 줄, 빈 문단은 빈 줄."""
     if not html:
         return ""
     if "<" not in html:
@@ -67,7 +74,32 @@ def _html_to_text(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
     for tag in soup(["script", "style", "head"]):
         tag.decompose()
-    return re.sub(r"\n{3,}", "\n\n", soup.get_text("\n")).strip()
+    for s in soup.find_all(string=True):              # 소스의 줄바꿈·들여쓰기는 화면에선 공백 하나 (&nbsp; 는 남김)
+        if type(s) is NavigableString and not s.find_parent("pre"):   # 주석은 그대로 (글자로 바꾸면 보인다)
+            s.replace_with(re.sub(r"[ \t\r\n\f\v]+", " ", s))
+    for br in soup.find_all("br"):
+        br.replace_with("\n")
+    for tag in soup.find_all(BLOCK_TAGS):
+        tag.insert_before(BLOCK)
+        tag.insert_after(BLOCK)
+    for cell in soup.find_all(["td", "th"]):           # 표의 칸은 공백으로, 줄은 <tr> 에서 바꾼다
+        cell.insert_after(" ")
+    # 블록 경계에서는 쓰던 줄에 글자가 있을 때만 줄을 바꾼다. 그래야 <p></p><p></p> 가 빈 줄을
+    # 만들지 않고, <p>&nbsp;</p> · <p><br></p> 같은 빈 문단만 빈 줄이 된다
+    lines, cur = [], ""
+    for i, piece in enumerate(soup.get_text().split(BLOCK)):
+        if i:
+            if cur.strip(" "):
+                lines.append(cur)
+            cur = ""
+        first, *rest = piece.split("\n")
+        cur += first
+        for seg in rest:                               # <br>
+            lines.append(cur)
+            cur = seg
+    lines.append(cur)
+    text = "\n".join(re.sub(r"[ \t\xa0]+", " ", ln).strip() for ln in lines)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
 def _addr(obj: Any) -> tuple[str, str]:

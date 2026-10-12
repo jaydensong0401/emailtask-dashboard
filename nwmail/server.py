@@ -7,6 +7,7 @@
   POST /api/feedback   완료 · 제외 · 업무삭제 · 되돌리기 기록
   POST /api/mark       답을 기다리는 메일 답변완료 · 프로젝트 완료 · 삭제 · 되돌리기 기록
   POST /api/due        할 일 기한 직접 정하기 · 메일 기한으로 되돌리기 (일정 탭)
+  POST /api/color      프로젝트 색 바꾸기 · 자동 색으로 되돌리기 (프로젝트 탭 머리줄 색 막대)
 
 다른 웹사이트가 브라우저를 통해 이 서버로 기록을 보내지 못하도록
 Host 헤더(127.0.0.1/localhost)와 대시보드에 심은 토큰을 확인한다.
@@ -22,6 +23,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from .colors import HEX, tones
 from .feedback import MARKS, FeedbackError, FeedbackStore
 
 BODY_MAX = 64_000
@@ -89,10 +91,12 @@ def make_server(port: int, page: Path, feedback: FeedbackStore,
                     rows = feedback.states()
                     marks = {t: feedback.marks(t) for t in MARKS}
                     dues = feedback.dues()
+                    colors = feedback.colors()
                 states = {k: {"label": v["label"], "reason": v["reason"],
                               "labeled_at": v["labeled_at"]} for k, v in rows.items()}
                 return self._json(HTTPStatus.OK, {
-                    "states": states, "dues": {k: _due_json(v) for k, v in dues.items()}, **{
+                    "states": states, "dues": {k: _due_json(v) for k, v in dues.items()},
+                    "colors": {k: _color_json(v) for k, v in colors.items()}, **{
                         f"{t}s": {k: _mark_json(v) for k, v in m.items()}
                         for t, m in marks.items()}})
             # 대시보드와 그 옆에 같이 만들어 두는 토큰 사용 현황 페이지. 둘 다 out/ 안의 파일 그대로 보낸다
@@ -149,6 +153,25 @@ def make_server(port: int, page: Path, feedback: FeedbackStore,
                 return self._json(HTTPStatus.BAD_REQUEST, {"error": msg})
             return self._json(HTTPStatus.OK, {"ok": True, "state": _due_json(state)})
 
+        def _post_color(self) -> None:
+            """{project, color: s1~s9 | #rrggbb | ''} 하나를 기록한다. 빈 color 는 자동 색으로 되돌리기."""
+            if not self._authorized():
+                return self._json(HTTPStatus.FORBIDDEN, {"error": "토큰이 맞지 않습니다"})
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = -1
+            if not 0 < length <= BODY_MAX:
+                return self._json(HTTPStatus.BAD_REQUEST, {"error": "본문 크기가 올바르지 않습니다"})
+            try:
+                it = json.loads(self.rfile.read(length).decode("utf-8"))
+                with lock:
+                    color = feedback.set_color(str(it.get("project") or ""), str(it.get("color") or ""))
+            except (ValueError, AttributeError, UnicodeDecodeError) as e:
+                msg = str(e) if isinstance(e, FeedbackError) else "요청 형식이 올바르지 않습니다"
+                return self._json(HTTPStatus.BAD_REQUEST, {"error": msg})
+            return self._json(HTTPStatus.OK, {"ok": True, "color": _color_json(color)})
+
         def _post_filters(self) -> None:
             """차단 규칙 · 보호 도메인 변경. 처리는 serve.py 가 붙인 filters_handler 가 한다."""
             if not self._authorized():
@@ -180,6 +203,8 @@ def make_server(port: int, page: Path, feedback: FeedbackStore,
                 return self._post_mark()
             if self.path.split("?", 1)[0] == "/api/due":
                 return self._post_due()
+            if self.path.split("?", 1)[0] == "/api/color":
+                return self._post_color()
             if self.path.split("?", 1)[0] == "/api/filters":
                 return self._post_filters()
             if self.path.split("?", 1)[0] != "/api/feedback":
@@ -223,6 +248,11 @@ def _mark_json(state: dict | None) -> dict | None:
 
 def _due_json(state: dict | None) -> dict | None:
     return {"due": state["due"], "set_at": state["set_at"]} if state else None
+
+
+def _color_json(color: str) -> dict:
+    """저장된 색. 직접 고른 색이면 테마별로 밝기를 맞춘 값(light · dark)도 함께 — 페이지가 바로 쓴다."""
+    return {"color": color, **(tones(color) if HEX.match(color) else {})}
 
 
 def _past_day(value) -> datetime | None:

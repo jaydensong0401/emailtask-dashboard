@@ -31,11 +31,20 @@ HEAD_WORD = re.compile(
 DASH_LINE = re.compile(r"^\s*[-=_]{4,}\s*$")
 ORIGIN_LINE = re.compile(
     r"^\s*(?:원본\s*메(?:일|시지)|original message|forwarded message)\s*$", re.I)
+# 메일플러그(누리마케팅 등)는 인용 머리말과 본문 사이에 <mailplughead></mailplughtml> 같은
+# 가짜 태그를 글자로 남긴다. 회신이 쌓이면 <xxmailplughead> 처럼 x 가 붙는다
+MAILPLUG_TAG = re.compile(r"\s*(?:</?x*mailplug(?:head|html|body)>\s*)+", re.I)
+# 줄바꿈이 모두 사라진 채 온 본문은 인용 표식이 문장 중간에 붙어 있다 (줄 맨 앞의 표식은 그대로)
+INLINE_QUOTE = re.compile(
+    r"(?<=[^\s-])[ \t]*(-{2,}[ \t]*(?:original message|forwarded message|원본[ \t]*메(?:일|시지))[ \t]*-{2,})",
+    re.I)
 
 
 def join_split_headers(body: str | None) -> str:
-    """쪼개진 인용 머리말을 한 줄로 모은다. 그 외 줄은 그대로 둔다."""
-    lines = (body or "").splitlines()
+    """쪼개진 인용 머리말을 한 줄로 모으고, 줄 중간에 붙은 인용 표식은 새 줄로 뗀다.
+    메일플러그 가짜 태그는 줄바꿈으로 바꾼다. 그 외 줄은 그대로 둔다."""
+    text = INLINE_QUOTE.sub(r"\n\1", MAILPLUG_TAG.sub("\n", body or ""))
+    lines = text.splitlines()
     out: list[str] = []
     i = 0
     while i < len(lines):
@@ -101,3 +110,50 @@ def snippet(body: str | None, limit: int = 120) -> str:
     text = tidy(_clean_body(cut_signature("\n".join(lines))))
     text = re.sub(r"\s+", " ", text).strip()
     return text[:limit] + ("…" if len(text) > limit else "")
+
+
+# 줄바꿈 없이 온 본문은 한글 문장 끝(마침표 바로 뒤에 글자)에서 줄을 나눈다. 주소·메일·소수(영문.영문, 1.5)는 그대로
+SENTENCE_END = re.compile(r"(?<=[가-힣)])([.!?])(?=[가-힣A-Za-z0-9(\[■•·※])")
+CLOSING_WORDS = r"(?:감사합니다|감사드립니다|고맙습니다|수고하세요|수고하십시오)"
+CLOSING = re.compile(rf"^\s*{CLOSING_WORDS}\s*[.!~]*\s*$")
+GLUED_CLOSING = re.compile(rf"(?<=[0-9A-Za-z])(?={CLOSING_WORDS}[.!~]*\n)")   # "...056905감사합니다."
+CONTACT = re.compile(r"@|\b(?:tel|fax|mobile|e-?mail)\b|\d{2,4}-\d{3,4}-\d{4}|\+82", re.I)
+
+
+def unglue(line: str) -> str:
+    """줄바꿈이 사라진 문단("...입니다.바쁘신...")을 문장 끝에서 나눈다. 두 군데 이상 붙어 있을 때만."""
+    if len(SENTENCE_END.findall(line)) < 2:
+        return line
+    return GLUED_CLOSING.sub("\n", SENTENCE_END.sub("\\1\n", line) + "\n").rstrip("\n")
+
+
+def cut_contact_block(text: str) -> str:
+    """마지막 맺음 인사("감사합니다.") 뒤가 연락처 서명이면 잘라낸다. "홍길동 드림"이 없는 메일용."""
+    lines = text.splitlines()
+    for i in range(len(lines) - 1, -1, -1):
+        if CLOSING.match(lines[i]):
+            tail = "\n".join(lines[i + 1:])
+            if tail.strip() and CONTACT.search(tail) and len(tail) <= 600:
+                return "\n".join(lines[:i + 1]).rstrip()
+            break
+    return text
+
+
+def preview_text(body: str | None) -> str:
+    """대시보드 '전체' 보기. 새로 쓴 부분만 남기고(인용 이력·전달 헤더·서명 제거) 줄바꿈은 살린다."""
+    from .rules import SIGNATURE_CUT
+
+    new, _ = split_quoted(body)
+    lines = new.splitlines()
+    while lines and _is_head(lines[0]):
+        lines.pop(0)                          # 전달 메일 맨 위의 헤더 블록
+    text = cut_signature("\n".join(lines))
+    for m in SIGNATURE_CUT.finditer(text):
+        tail = text[m.end():]
+        if m.group().lstrip()[:1] in "-=" and not (CONTACT.search(tail) and len(tail) <= 600):
+            continue                          # 구분선 아래가 본문(표·목록)이면 자르지 않는다
+        text = text[:m.start()]
+        break
+    text = "\n".join(unglue(ln.strip()) for ln in text.splitlines())
+    text = cut_contact_block("\n".join(ln.strip() for ln in text.splitlines()))
+    return tidy(text)
