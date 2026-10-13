@@ -1287,8 +1287,7 @@ def _kpis(m: dict) -> str:
         f'<p class="v">{value}</p><p class="c deadline-counts">{caption}</p></div>'
         '<div class="kpi"><h2 class="l">답장 대기</h2>'
         f'<p class="v"><b class="num{warn}" id="kpi-wait">{s["unanswered"]}</b><span class="u">건 대기</span></p>'
-        f'<p class="c" id="kpi-wait-c">{wait_caption}</p>'
-        '<a class="kpi-go" href="#wait">목록 보기 →</a></div></div>'
+        f'<p class="c" id="kpi-wait-c">{wait_caption}</p></div></div>'
         f'<p class="project-summary">진행 프로젝트 <b class="num" id="kpi-proj">{s["named_projects"]}</b>개'
         f' · 새로 온 대화 <b class="num">{s["new"]}건</b></p></div>'
         '<aside class="system-summary" aria-labelledby="system-summary-title">'
@@ -1473,11 +1472,13 @@ def _act_title(th: dict) -> str:
 
 
 def _act_row(r: dict, order: int) -> str:
-    """대화 카드 안의 내 할 일 한 줄: 체크(완료) · 할 일 / 기한 · 제외 · 업무삭제(올리면 보임).
+    """대화 카드 안의 내 할 일 한 줄: 할 일 / 기한 · 완료 · 제외 · 업무삭제.
+
+    버튼은 프로젝트 탭 할 일과 똑같이 — 같은 테두리 단추를 그 줄 기한 칩과 같은 줄 오른쪽 끝에 늘 띄운다.
 
     표시해도 줄은 그 자리에 둔다 (취소선 · 상태 + 되돌리기). 완료 / 제외·삭제 목록에는 페이지가
     카드 틀(act-{id})을 복사해 올리고, 다음 갱신 때 서버가 그린 목록으로 바뀐다.
-    문구를 눌러도 체크하지 않는다 (IP · 주소 같은 문구를 긁어 쓰는 일이 많아서).
+    버튼으로만 표시한다 — 문구를 긁어 쓰다가(IP · 주소) 체크가 눌리는 일이 없도록 체크 상자는 두지 않는다.
     """
     a = r["act"]
     d = a["deadline"]
@@ -1491,14 +1492,15 @@ def _act_row(r: dict, order: int) -> str:
     tid = f'tkt-{a["id"]}'
     return (
         '<li class="tk" ' + " ".join(f'{k}="{esc(v)}"' for k, v in attrs.items()) + ">"
-        f'<input type="checkbox" class="ck" aria-labelledby="{tid}"'
-        f'{" checked" if state_label(a) == "done" else ""}>'
         f'<div class="tk-b"><p class="tk-t" id="{tid}">{esc(a["text"])}</p>{dup}{_repeat_tag(a)}</div>'
         f'<div class="tk-r"><span class="due lv-{d["level"]}">{esc(_due_text(d))}</span>{MANUAL_TAG}'
         f'<span class="st">{esc(_status_text(a.get("state")))}</span>'
-        '<span class="ctl"><button type="button" class="gh" data-act="excluded">제외</button>'
-        '<button type="button" class="gh" data-act="deleted">업무삭제</button>'
-        '<button type="button" class="gh undo" data-act="open">되돌리기</button></span></div></li>'
+        f'<span class="ctl"><button type="button" class="btn ok" data-act="done" '
+        f'aria-describedby="{tid}">완료</button>'
+        f'<button type="button" class="btn" data-act="excluded" aria-describedby="{tid}">제외</button>'
+        f'<button type="button" class="btn" data-act="deleted" aria-describedby="{tid}">업무삭제</button>'
+        f'<button type="button" class="btn undo" data-act="open" aria-describedby="{tid}">되돌리기'
+        '</button></span></div></li>'
     )
 
 
@@ -1622,7 +1624,7 @@ def _open_view(acts: list[dict], ctx: dict) -> str:
     return (
         f'<p class="acts-sum">대화 <b class="num" id="sum-cv">{len(convs)}</b>개 · 할 일 '
         f'<b class="num" id="sum-n">{n}</b>건<span class="over" id="sum-over"{"" if over else " hidden"}>'
-        f' · 기한 지남 <b class="num" id="sum-over-n">{over}</b></span> · 체크하면 완료로 표시됩니다</p>'
+        f' · 기한 지남 <b class="num" id="sum-over-n">{over}</b></span> · 줄 오른쪽 완료 버튼으로 표시합니다</p>'
         f'<section class="az" data-zone="due"{"" if dated else " hidden"}><h3 class="az-h"><span>마감 있는 일'
         f'</span><b class="az-n num">{due_n}</b></h3>'
         f'<div class="cvs">{"".join(_act_cv(c, ctx) for c in dated)}</div></section>'
@@ -1670,7 +1672,7 @@ def _acts(m: dict) -> str:
     views = [
         ("open", "할 일", m["stats"]["my_open"], "남은 내 할 일이 없습니다.",
          "메일 대화별로 묶었습니다 · 기한 있는 일이 위, 기한 없는 일은 프로젝트별.\n"
-         "체크하면 완료, 줄에 마우스를 올리면 제외·업무삭제. 표시 기록은 업무 정리 기준을 다듬는 데 씁니다."),
+         "줄 오른쪽 버튼으로 완료·제외·업무삭제. 표시 기록은 업무 정리 기준을 다듬는 데 씁니다."),
         ("done", "완료", len(m.get("done_actions", [])),
          f"최근 {LABELED_DAYS}일 동안 완료한 일이 없습니다.",
          f"최근 {LABELED_DAYS}일 · 최근에 완료한 순"),
@@ -2925,8 +2927,6 @@ a.pill:hover{border-color:var(--box);background:var(--side)}
 
 /* 오늘 탭은 한 칸 (머리 요약과 같은 40px 들여쓰기) */
 .today{padding:34px 40px 44px;min-width:0}
-.kpi-go{display:inline-block;margin-top:6px;font-size:12px;font-weight:600;color:var(--acc);text-decoration:none}
-.kpi-go:hover{text-decoration:underline;text-underline-offset:3px}
 .sec-h{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:0 0 18px}
 .sec-h.gap{margin-top:38px}
 .sec-h h2{margin:0;font-size:16px;line-height:1.2;font-weight:600}
@@ -3015,13 +3015,6 @@ a.pill:hover{border-color:var(--box);background:var(--side)}
 .tks{margin-top:10px;border-top:1px solid var(--line)}
 .tk{display:flex;flex-wrap:wrap;align-items:flex-start;gap:4px 10px;padding:9px 0 8px;border-bottom:1px dashed var(--line)}
 .tk:last-child{border-bottom:0}
-.ck{appearance:none;display:grid;place-items:center;flex:none;width:18px;height:18px;margin:2px 0 0;
- border:1.5px solid var(--box);border-radius:5px;background:var(--surface);cursor:pointer}
-.ck:hover:not(:disabled){border-color:var(--acc)}
-.ck:checked{background:var(--acc);border-color:var(--acc)}
-.ck:checked::after{content:"";width:5px;height:9px;border:solid var(--acc-ink);border-width:0 2px 2px 0;
- transform:translateY(-1px) rotate(45deg)}
-.ck:disabled{cursor:not-allowed;opacity:.5}
 .tk-b{flex:1;min-width:0}
 .tk-t{margin:0;font-size:14px;line-height:1.5;font-weight:500;color:var(--ink);overflow-wrap:anywhere;word-break:keep-all}
 .tk-b .dup{display:block;margin-top:2px;font-size:11.5px;color:var(--muted)}
@@ -3032,20 +3025,16 @@ a.pill:hover{border-color:var(--box);background:var(--side)}
 .tk .due.lv-today{background:var(--warn-bg)}
 .tk .due.lv-soon{color:var(--caution)}
 .tk .due.lv-later{font-weight:500;color:var(--ink-2)}
-.tk .ctl{gap:2px;opacity:0;transition:opacity .12s}
-.tk:hover .ctl,.tk:focus-within .ctl,.tk:not([data-state="open"]) .ctl{opacity:1}
-@media (hover:none){.tk .ctl{opacity:1}}
-.gh{appearance:none;padding:2px 7px;border:0;border-radius:6px;background:none;font:inherit;font-size:12px;
- color:var(--muted);cursor:pointer;white-space:nowrap}
-.gh:hover:not(:disabled){background:var(--tag);color:var(--ink)}
-.gh:disabled{cursor:not-allowed;opacity:.5}
-.tk .undo,.tk:not([data-state="open"]) .gh:not(.undo){display:none}
+/* 버튼: 프로젝트 탭 할 일과 똑같이 — 같은 테두리 단추(.btn)를 그 줄 오른쪽 끝에 늘 띄운다 */
+.tk .ctl{gap:4px;margin-left:auto}
+.tk .btn{padding:3px 9px;font-size:11.5px}
+.tk .undo,.tk:not([data-state="open"]) .btn:not(.undo){display:none}
 .tk:not([data-state="open"]) .undo{display:inline-block}
 .tk[data-state="done"] .tk-t{color:var(--muted);text-decoration:line-through;text-decoration-color:var(--box)}
 .tk[data-state="excluded"] .tk-t,.tk[data-state="deleted"] .tk-t{color:var(--muted)}
 .tk:not([data-state="open"]) .due{opacity:.45}
 .tk[data-state="done"] .st{background:var(--acc-bg);color:var(--acc)}
-.tk .why{flex-basis:100%;margin:4px 0 2px 28px;padding-top:10px}
+.tk .why{flex-basis:100%;margin:4px 0 2px;padding-top:10px}
 .cv-oth{margin:2px 0}
 .cv-oth>summary{display:inline-flex;align-items:center;gap:6px;padding:4px 6px 4px 0;list-style:none;font-size:12px;
  color:var(--muted);cursor:pointer}
@@ -3058,7 +3047,7 @@ a.pill:hover{border-color:var(--box);background:var(--side)}
 .cv.allset:hover>*,.cv.allset:focus-within>*{opacity:1}
 .cv.allset .cv-fin{display:block}
 /* 넓은 화면: 왼쪽 메일(제목 · 메일 줄 · 현황 · 다른 담당자) | 오른쪽 내 할 일. 요약 한 줄 길이는 좁던 때와 비슷하게
-   두고 카드 높이를 줄인다. 할 일 칸이 좁으니 기한은 글 아래 줄로, 제외 · 업무삭제는 올렸을 때 오른쪽 위에 겹쳐 띄운다.
+   두고 카드 높이를 줄인다. 할 일 칸이 좁으니 기한 · 버튼은 글 아래 줄로 내리고, 버튼은 그 줄 오른쪽 끝.
    날짜 칩 줄(1행)은 두 칸에 걸친 머리라 할 일 칸은 제목 높이(2행)부터. 기한 없는 대화는 이 줄 높이가 0 */
 @media (min-width:901px){
  .cv{padding-bottom:12px}
@@ -3069,13 +3058,8 @@ a.pill:hover{border-color:var(--box);background:var(--side)}
  .cv-b>.tks{grid-column:2;grid-row:2/-1;align-self:stretch;margin:-6px 0;padding-left:22px;border-top:0;
   border-left:1px solid var(--line)}
  .cv-oth>summary{border-top:0}
- .tk-r{flex-basis:100%;justify-content:flex-start;padding-left:28px}
+ .tk-r{flex-basis:100%;justify-content:flex-start}
  .tk-r .due:empty{display:none}
-}
-@media (min-width:901px) and (hover:hover){
- .tk{position:relative}
- .tk .ctl{position:absolute;top:6px;right:0;padding:2px 0 2px 18px;
-  background:linear-gradient(90deg,transparent,var(--surface) 16px)}
 }
 .hide-done .tk[data-state="done"],.hide-done .cv.alldone{display:none}
 .act{padding:18px 22px 16px 20px;background:var(--surface);border:1px solid var(--line-2);border-left-width:3px;border-radius:12px}
@@ -3615,7 +3599,7 @@ a.btn{display:inline-block;text-decoration:none}
  .act{padding:16px}
  .apg>.cvs{padding-left:0}
  .cv{padding:12px 14px 6px}
- .tk-r{width:100%;padding-left:28px;justify-content:flex-start}
+ .tk-r{width:100%;justify-content:flex-start}
  .proj-b{gap:8px;margin-left:0;padding:6px 0 2px 12px;border-left-width:3px}
  .work-h .wm{margin-left:0;white-space:normal}
  #tab-today .sec-h:first-child{flex-wrap:wrap}
@@ -4077,9 +4061,8 @@ JS = """
     }
     syncWork(work);
   }
-  // 할 일 보기 줄: 표시해도 자리는 그대로 (취소선 · 상태 + 되돌리기). 체크 상자는 완료일 때만 켠다
+  // 할 일 보기 줄: 표시해도 자리는 그대로 (취소선 · 상태 + 되돌리기)
   function placeRow(li){
-    var ck=li.querySelector('.ck');if(ck)ck.checked=li.dataset.state==='done';
     li.querySelector('.st').textContent=statusText(li);
   }
   function relocate(li){
@@ -4105,7 +4088,7 @@ JS = """
   var pendingTasks={};
   function taskBusy(id,busy){
     pendingTasks[id]=busy;
-    document.querySelectorAll('[data-task="'+id+'"] .ctl button,[data-task="'+id+'"] .ck').forEach(function(b){b.disabled=busy;});
+    document.querySelectorAll('[data-task="'+id+'"] .ctl button').forEach(function(b){b.disabled=busy;});
   }
   function mark(li,label,reason){
     if(pendingTasks[li.dataset.task])return;
@@ -4165,13 +4148,6 @@ JS = """
     var b=e.target.closest('[data-act]');if(!b||b.disabled)return;
     var li=b.closest('.act,.tk,.task,.sit'),act=b.dataset.act;if(!li)return;
     if(act==='excluded'||act==='deleted')askWhy(li,act);else mark(li,act,'');
-  });
-  // 할 일 보기 체크 상자: 켜면 완료, 끄면 남은 일로. 상자 모양은 저장 흐름(apply → placeRow)이 맞춘다
-  document.addEventListener('change',function(e){
-    var ck=e.target;if(!ck.classList||!ck.classList.contains('ck'))return;
-    var li=ck.closest('.tk');if(!li)return;
-    ck.checked=li.dataset.state==='done';
-    mark(li,li.dataset.state==='done'?'open':'done','');
   });
   // Esc: 사유 고르기를 닫고, 떠 있는 말풍선(메일 제목 · 도움말)도 숨긴다 (포인터가 나가거나 포커스가 빠지면 다시 뜬다)
   document.addEventListener('keydown',function(e){
@@ -4795,7 +4771,7 @@ JS = """
 
   function notice(html){var n=document.getElementById('srv-note');if(n){n.innerHTML=html;n.hidden=false;}}
   function disable(title){
-    document.querySelectorAll('.act [data-act],.tk [data-act],.tk .ck,.task [data-act],.kb-btn,.proj-h>.bar,.wx [data-wmark],.sit [data-act],.due-in,[data-due-rev]').forEach(function(b){
+    document.querySelectorAll('.act [data-act],.tk [data-act],.task [data-act],.kb-btn,.proj-h>.bar,.wx [data-wmark],.sit [data-act],.due-in,[data-due-rev]').forEach(function(b){
       b.disabled=true;b.title=title;});
   }
   function isoDay(md){   // 'MM/DD' → 가장 가까운 지난 날짜 'YYYY-MM-DD'

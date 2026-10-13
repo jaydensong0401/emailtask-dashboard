@@ -512,9 +512,9 @@ def main() -> int:
               '<h2>내가 해야 할 일</h2><span class="infotip" tabindex="0"' in today_tab
               and 'aria-describedby="acts-note"' in hint and 'role="tooltip" id="acts-note"' in hint
               and '<p class="note" id="acts-note">' not in today_tab)
-        check("말풍선 문구는 두 줄 (묶는 방식 / 체크 · 제외 · 표시 기록 안내)",
+        check("말풍선 문구는 두 줄 (묶는 방식 / 완료 · 제외 · 표시 기록 안내)",
               "메일 대화별로 묶었습니다 · 기한 있는 일이 위, 기한 없는 일은 프로젝트별.\n"
-              "체크하면 완료, 줄에 마우스를 올리면 제외·업무삭제. 표시 기록은 업무 정리 기준을 다듬는 데 씁니다."
+              "줄 오른쪽 버튼으로 완료·제외·업무삭제. 표시 기록은 업무 정리 기준을 다듬는 데 씁니다."
               in hint and ".infotip .tip{" in out and "white-space:pre-line" in out)
         order = [me_tab.find(t) for t in ("예산 승인", "기획안 회신", "참고 자료 확인")]
         check("같은 대화의 할 일 세 건은 대화 카드 한 장 안의 세 줄, 마감순 (기한 지남 → 오늘 → 기한 없음)",
@@ -588,13 +588,27 @@ def main() -> int:
                                  "사내 메신저 PC버전 계정 발급 진행 상황 확인 및 결과 회신"))
         check("기한 등급 속성 (오늘 마감 · 지난 마감 집계용)", 'data-level="overdue"' in me_tab
               and 'data-level="today"' in me_tab)
-        check("줄마다 체크 상자(완료) + 제외 · 업무삭제 · 되돌리기 (완료 버튼 대신 체크)",
-              me_tab.count('<input type="checkbox" class="ck"') == 3 and 'data-act="done"' not in me_tab
-              and me_tab.count('data-act="excluded">제외</button>') == 3
-              and 'data-act="deleted">업무삭제</button>' in me_tab
-              and 'data-act="open">되돌리기</button>' in me_tab)
-        check("체크 상자 이름은 그 줄 문구 (aria-labelledby 가 같은 id)",
-              re.search(r'class="ck" aria-labelledby="(tkt-[0-9a-f]+)">.*?id="\1"', me_tab) is not None)
+        check("줄마다 완료 · 제외 · 업무삭제 · 되돌리기 버튼 (체크 상자는 없앰)",
+              '<input type="checkbox" class="ck"' not in me_tab
+              and me_tab.count('class="btn ok" data-act="done" ') == 3
+              and me_tab.count('data-act="excluded"') == 3
+              and 'data-act="deleted"' in me_tab and 'data-act="open"' in me_tab)
+        check("버튼은 프로젝트 탭처럼 늘 보인다 (마우스를 올릴 필요 없음)",
+              ".tk .ctl{gap:4px;margin-left:auto}" in out
+              and "opacity:0" not in section(out, ".tk .ctl{", (".tk[data-state=",))
+              and ".tk:hover .ctl" not in out)
+        check("버튼 모양 · 자리는 프로젝트 탭 할 일과 같게 (테두리 단추 · 기한 줄 오른쪽 끝)",
+              '<button type="button" class="btn ok" data-act="done" ' in me_tab
+              and ".tk .btn{padding:3px 9px;font-size:11.5px}" in out
+              and ".gh{" not in out and 'class="gh' not in out)
+        check("기한 없는 줄도 버튼은 글 아래 줄 오른쪽 끝 (겹쳐 띄우지 않음)",
+              ".tk-r{flex-basis:100%;justify-content:flex-start}" in out
+              and ".tk:has(" not in out and "padding-left:28px" not in out)
+        check("버튼이 어느 할 일인지 읽어 준다 (aria-describedby 가 그 줄 문구 id)",
+              re.search(r'data-act="done" aria-describedby="(tkt-[0-9a-f]+)">완료</button>.*?id="\1"',
+                        me_tab, re.S) is not None
+              or re.search(r'id="(tkt-[0-9a-f]+)".*?data-act="done" aria-describedby="\1"',
+                           me_tab, re.S) is not None)
         check("표시 기록 없으면 모두 남은 일 (완료 · 제외·삭제 목록은 비어 있음)",
               me_tab.count('data-state="open"') == 3 and 'id="cnt-done">0' in today_tab
               and 'id="cnt-dropped">0' in today_tab)
@@ -805,8 +819,8 @@ def main() -> int:
               out.find('id="b-tab-today"') < out.find('id="b-tab-wait"') < out.find('id="b-tab-projects"')
               and f'<span class="cnt warn" data-tabcnt="tab-wait">{s["unanswered"]}<' in out
               and s["unanswered"] == 2, str(s["unanswered"]))
-        check("머리 요약 '답장 대기' 의 '목록 보기 →' 는 답장 대기 탭으로",
-              '<a class="kpi-go" href="#wait">목록 보기 →</a>' in out)
+        check("머리 요약 '답장 대기' 에는 '목록 보기 →' 링크를 두지 않는다 (탭 줄로 간다)",
+              "목록 보기" not in out and "kpi-go" not in out)
         check("'할 일 N건 →' 은 오늘 탭으로 바꾼 뒤 카드로 · 답변완료 때 탭 숫자도 고침",
               "getElementById('b-tab-today');if(tt&&" in out and '[data-tabcnt="tab-wait"]' in out)
         un = section(wait_tab, 'id="waits"', ('</ul>',))
@@ -902,8 +916,8 @@ def main() -> int:
         check("ID 는 내용 기반", task_id("<a1@t>", "me", "기획안 회신") in ids1)
         check("예전 브라우저 체크는 서버로 옮기는 코드만 남김",
               "nwmail.done.v1" in out and "input[data-task]" not in out)
-        check("서버 주소가 아니면 프로젝트 할 일 버튼 · 체크 상자도 잠금",
-              ".act [data-act],.tk [data-act],.tk .ck,.task [data-act]" in out)
+        check("서버 주소가 아니면 프로젝트 할 일 버튼도 잠금",
+              ".act [data-act],.tk [data-act],.task [data-act]" in out)
         rows = re.findall(r'<li class="task[^>]*data-text="([^"]*)"[^>]*>(.*?)</li>', out, re.S)
         check("프로젝트 할 일 스냅샷 문구에 역할 태그가 섞이지 않음 (태그는 문구 밖 칸)",
               bool(rows) and all(f'<p class="t">{t}</p>' in li and "rtag" not in li[li.find('<p class="t">'):]

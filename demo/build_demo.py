@@ -97,6 +97,8 @@ THREADS = [
          "확인했습니다. 오픈일은 9월 22일로 맞추겠습니다. 메인 배너는 두 가지 안으로 준비하겠습니다."),
         ("이지우", at(9, 17, "15:30"), ["me"], ["박도윤"],
          "메인 배너는 B안으로 진행해 주세요. 상품 설명 문구 수정본과 쿠폰 코드는 내일 전달드리겠습니다."),
+        ("me", at(9, 17, "16:30"), ["이지우"], ["박도윤"],
+         "확인했습니다. 쿠폰 코드 받으면 검수 일정 공유드리겠습니다."),
      ], x=dict(project="오로라 스토어", status="진행중",
                summary="추석 기획전 페이지 시안 검토 중. 메인 배너 B안 확정, 9/22 오픈 예정.",
                decisions=[dec("기획전 오픈일 9월 22일 확정", "이지우", "2026-09-15"),
@@ -105,8 +107,8 @@ THREADS = [
                       task("메인 배너 B안 최종 시안 제작", "디자인", "박도윤", "루미", "2026-09-19"),
                       task("상품 설명 문구 수정 반영", "수정", "박도윤", "루미", "2026-09-18", "디자인"),
                       task("기획전 쿠폰 코드 전달", "기타", "이지우", "오로라", "2026-09-19"),
-                      task("기획전 페이지 최종 검수 후 오픈 승인 요청", "기타", "홍길동", "루미", "2026-09-21")],
-               my_actions=[act("기획전 페이지 최종 검수 후 오픈 승인 요청", "2026-09-21", "high")])),
+                      task("기획전 페이지 최종 검수 후 오픈 승인 요청", "기타", "홍길동", "루미", "2026-09-25")],
+               my_actions=[act("기획전 페이지 최종 검수 후 오픈 승인 요청", "2026-09-25", "high")])),
     dict(key="store-delay", subject="[루미] 스토어몰 배송 지연 고객 안내 문자 발송 건", mails=[
         ("윤서진", at(9, 16, "14:05"), ["me"], [],
          "택배사 물량 증가로 일부 주문 배송이 2~3일 늦어질 예정입니다. 안내 문자 문구 확인 부탁드립니다."),
@@ -158,7 +160,7 @@ THREADS = [
                decisions=[dec("배너 메인 카피는 '매일 쌓이는 혜택'으로 결정", "이지우", "2026-09-12")],
                tasks=[task("이벤트 배너 2차 시안 제작", "디자인", "차도현", "블루애드", "2026-09-23"),
                       task("이벤트 페이지 카드 발급 버튼 연동", "개발", "김하늘", "루미", "2026-09-25")],
-               my_actions=[act("배너 시안 피드백 정리해 회신", "2026-09-19", "medium")])),
+               my_actions=[])),                # 내 할 일 없이 답장만 기다리는 대화
     dict(key="classic-vip", subject="[문의] 오로라 클래식 VIP 티켓 발송 일정", mails=[
         ("서다은", at(9, 11, "09:30"), ["me"], [],
          "오로라 클래식 VIP 티켓 발송 일정 확인 부탁드립니다."),
@@ -182,7 +184,7 @@ THREADS = [
                decisions=[dec("초청 대상은 최근 1년 구매 고객으로 한정", "오세린", "2026-09-16")],
                tasks=[task("초청 신청 페이지 개설", "개발", "김하늘", "루미", "2026-09-30"),
                       task("초청 안내 알림톡 발송", "기타", "오세린", "누리", "2026-10-10")],
-               my_actions=[act("초청 대상 고객 등급 기준 확인", "2026-09-22", "medium")])),
+               my_actions=[])),                # 답장만 기다리는 대화 (내 할 일은 없음)
     dict(key="sig-1", subject="[NURI] 시그니처 멤버십 신청 기한 연장 요청의 건_강○희 고객", mails=[
         ("윤서진", at(9, 15, "13:30"), ["김하늘"], ["me"],
          "시그니처 멤버십 신청 기한 연장 요청입니다. CRM 기한 변경 부탁드립니다."),
@@ -190,14 +192,6 @@ THREADS = [
                summary="고객 요청으로 멤버십 신청 기한 연장 처리 필요.",
                decisions=[],
                tasks=[task("신청 기한 연장 처리", "수정", "김하늘", "루미", "2026-09-18", "데이터")],
-               my_actions=[])),
-    dict(key="sig-2", subject="[NURI] 시그니처 멤버십 신청 기한 연장 요청의 건_문○준 고객", mails=[
-        ("윤서진", at(9, 17, "11:10"), ["김하늘"], ["me"],
-         "같은 건으로 한 분 더 연장 요청이 있어 전달드립니다."),
-     ], x=dict(project="오로라 운영(기타)", status="진행중",
-               summary="추가 고객의 신청 기한 연장 요청.",
-               decisions=[],
-               tasks=[task("연장 처리 결과 고객 안내", "기타", "윤서진", "누리", "2026-09-19")],
                my_actions=[])),
     dict(key="ops-open", subject="신규 매장 오픈 고객 초청 인원 확인", mails=[
         ("이지우", at(9, 14, "09:00"), ["me"], [],
@@ -209,19 +203,14 @@ THREADS = [
                decisions=[dec("오픈 행사 초청 인원 120명 확정", "이지우", "2026-09-16")],
                tasks=[],
                my_actions=[act("초청 인원 최종 집계 공유", "2026-09-16", "high")])),
-    dict(key="ops-race", subject="썬더 레이싱 시네마 워치파티 이벤트 페이지 수정 요청", mails=[
-        ("강민재", at(9, 17, "17:40"), ["me"], [],
-         "워치파티 일정이 바뀌어 이벤트 페이지 일정 영역 수정이 필요합니다."),
-     ], x=dict(project="오로라 운영(기타)", status="진행중",
-               summary="워치파티 일정 변경으로 이벤트 페이지 수정 필요.",
-               decisions=[],
-               tasks=[task("워치파티 일정 영역 수정", "수정", "김하늘", "루미", "2026-09-21", "개발")],
-               my_actions=[act("수정 범위 확인 후 일정 회신", "2026-09-19", "high")])),
     dict(key="volt-api", subject="[KX볼트링크] 충전 요금 안내 페이지 API 연동 확인", mails=[
         ("문태오", at(8, 20, "10:00"), ["me"], [],
          "충전 요금 안내 페이지에 요금 조회 API 연동이 필요합니다."),
         ("문태오", at(9, 16, "15:00"), ["김하늘"], ["me"],
          "요금 조회는 기존 API v2를 그대로 쓰기로 했습니다. 응답 형식 확인 부탁드립니다."),
+        # 업무삭제로 분석에서 뺀 뒤 받는사람(TO)으로 다시 지목된 메일 -> 화면 위 알림
+        ("문태오", at(9, 18, "10:50"), ["me"], [],      # 업무삭제 표시(10:40) 뒤에 온 메일이어야 알림이 뜬다
+         "응답 형식 확인 건으로 다시 메일드립니다. 이번 주 안에 회신 부탁드립니다."),
      ], x=dict(project="KX볼트링크", status="진행중",
                summary="요금 조회 API v2 연동 확정, 응답 형식 확인 단계.",
                decisions=[dec("요금 조회는 기존 API v2를 그대로 사용", "문태오", "2026-09-16")],
@@ -250,25 +239,12 @@ THREADS = [
          "9월 채용 트렌드 리포트를 확인해 보세요."),
      ], x=dict(project="", status="완료", summary="채용 트렌드 뉴스레터.", decisions=[],
                tasks=[], my_actions=[])),
-    dict(key="job-2", subject="[잡스테이션] HR 인사이트 리포트 9월호", mails=[
-        ("marketing@jobstation.example", at(9, 16, "08:00"), ["members@jobstation.example"], [],
-         "HR 인사이트 리포트 9월호가 나왔습니다."),
-     ], x=dict(project="", status="완료", summary="HR 뉴스레터.", decisions=[],
-               tasks=[], my_actions=[])),
-    dict(key="weekly", subject="주간 회의록 공유", mails=[
-        ("정다온", at(9, 14, "18:00"), [TEAM], [], "이번 주 회의록 공유드립니다."),
-     ], x=dict(project="", status="완료", summary="주간 회의록 공유.", decisions=[],
-               tasks=[], my_actions=[])),
     dict(key="daily", subject="9월 17일 기준 일일 통계 데이터 공유", mails=[
         ("report@lumi.example", at(9, 18, "08:50"), [TEAM], [], "어제 기준 스토어몰 일일 통계입니다."),
      ], x=None),                                  # 정기 보고 -> 대시보드에만 (정리 제외)
     dict(key="travel-1", subject="여행 매거진 뉴스레터 9월호", mails=[
         ("news@travelmag.example", at(9, 12, "07:30"), ["subscriber@travelmag.example"], [],
          "가을 여행지 추천"),
-     ], x=None),
-    dict(key="travel-2", subject="가을 여행 특집 뉴스레터", mails=[
-        ("news@travelmag.example", at(9, 17, "07:30"), ["subscriber@travelmag.example"], [],
-         "단풍 명소 모음"),
      ], x=None),
     # 최근 7일 창 밖 대화 - 기한 있는 남은 할 일은 '지난 대화' 로 오늘 · 일정 탭에 남는다
     dict(key="settle", subject="[루미] 8월 정산 자료 요청", mails=[
@@ -284,12 +260,9 @@ THREADS = [
 # 차단 메일 (규칙에 걸리는 것) - (보낸 주소, 시각, 제목, 수신거부 헤더)
 BLOCKED = [
     ("ad@shopmall.example", at(9, 16, "12:00"), "(광고) 가을 신상품 최대 50% 할인", True),
-    ("event@giftmall.example", at(9, 17, "09:00"), "(광고) 추석 선물세트 사전 예약 안내", True),
     ("news@cadnova.example", at(9, 15, "06:00"), "CadNova 플러그인 뉴스 - 9월", True),
-    ("zine@cadnova.example", at(9, 17, "06:00"), "CadNova3Dzine - September", True),
     ("seminar@eduhub.example", at(9, 16, "10:00"), "커머스 데이터 분석 실무 세미나 참석 안내", False),
     ("support+notifications@designhub.example", at(9, 17, "14:00"), "스토어 배너 파일에 새 댓글이 달렸습니다", False),
-    ("support+notifications@designhub.example", at(9, 18, "10:00"), "편집 권한 요청이 도착했습니다", False),
 ]
 RULES = [   # (종류, 문구, 메모, 구분, 켜짐)
     ("subject", "(광고)", "법정 광고 표기", "광고·홍보", True),
@@ -467,7 +440,7 @@ def seed() -> None:
              {"role": "수정", "assignee": "박도윤", "project": "오로라 스토어"}),
             ("forum-invite", "task", "초청 안내 알림톡 발송", "excluded", "이미 다른 사람이 처리",
              {"role": "기타", "assignee": "오세린", "project": "오로라 포럼"}),
-            ("volt-api", "me", "API 테스트 계정 요청", "deleted", "이미 끝난 일",
+            ("volt-api", "me", "API 테스트 계정 요청", "deleted", "할 일 아님",
              {"urgency": "low", "project": "KX볼트링크"}),
         ]
         with FeedbackStore(DEMO_FB) as fb:
