@@ -195,7 +195,7 @@
         </figure>
       </div>
       <div class="case-outcome"><b>기획 역량</b><span>정보 구조 설계 · 업무 단위 정의 · 상태 일관성 · 자동 병합의 경계 설정</span></div>
-      <p class="case-source">공개 데모를 직접 연결해 업데이트된 화면을 보여 줍니다. 회사·사람·메일은 가상이며, 완료·제외·기한·색 기록은 방문자 브라우저에 저장됩니다. 메일함 접속과 AI 호출은 하지 않습니다. 별도 화면에서 보려면 <a class="text-link" href="../index.html" target="_blank" rel="noopener noreferrer">데모 새 창으로 열기</a>.</p>
+      <p class="case-source">공개 데모에서는 가상 메일에 적용된 이름·팀 이메일·전화번호 마스킹을 확인할 수 있습니다. 완료·제외·기한·색 기록은 방문자 브라우저에 저장됩니다. 별도 화면에서 보려면 <a class="text-link" href="../index.html" target="_blank" rel="noopener noreferrer">데모 새 창으로 열기</a>.</p>
     </article>
     <article class="case-panel" role="tabpanel" id="case-control" aria-labelledby="tab-control" tabindex="0" hidden>
       <div class="case-heading"><div><span class="micro">DECISION 02 · HUMAN CONTROL</span><h3>제외한 판단은 유지하고, 새 요청은 알렸습니다.</h3></div><span class="badge">구현됨</span></div>
@@ -248,7 +248,16 @@
     <div class="section-heading"><span class="section-no">06 / MY CONTRIBUTION</span><div><h2 id="contribution-title">제가 기획한 것은,<br>업무를 판단하는 기준과 처리 방식입니다.</h2><p>개인 업무에서 출발해 요구사항과 예외 정책을 정하고, AI 도구를 활용한 구현·검증을 거쳐 실제 동작하는 프로토타입으로 연결했습니다.</p></div></div>
     <div class="inset contribution-grid">
       <ol class="contribution-list"><li><span class="number">01</span><div><b>문제와 우선순위 정의</b><p>반복 재독·내 업무 판별·처리 상태 관리를 핵심 문제로 정리</p></div></li><li><span class="number">02</span><div><b>정보 구조와 화면 흐름 설계</b><p>대화 → 업무 → 프로젝트로 연결하고 다음 행동을 중심에 배치</p></div></li><li><span class="number">03</span><div><b>자동화 정책과 예외 설계</b><p>완료·제외·복구의 기준, 수신 대상 알림, 업무 연결 조건 정의</p></div></li><li><span class="number">04</span><div><b>검증 기준과 개선 가설 설정</b><p>상태 시나리오·사용량·품질을 확인하고 다음 실험의 지표 설정</p></div></li></ol>
-      <aside class="implementation-note"><span class="micro">FROM PLAN TO WORKING PRODUCT</span><h3>설계를 구현으로 연결</h3><p>메일 수집, 대화 분석, 대시보드, 사용자 판단 기록을 하나의 흐름으로 구성했습니다. 기획 의도를 실제 화면과 처리 규칙으로 확인하며 개선합니다.</p><div class="tech-list"><span>Python</span><span>SQLite</span><span>IMAP</span><span>HTML · CSS · JS</span><span>AI CLI / 선택형 엔진</span></div><p class="data-boundary"><strong>데이터 처리 범위</strong><br>메일 저장과 대시보드는 로컬에서 운영합니다. 외부 AI 엔진을 선택하면 필요한 텍스트가 해당 서비스로 전달됩니다. 메일함은 읽기 전용으로 연결합니다.</p><p class="data-boundary"><strong>기획·구현의 역할</strong><br>업무 문제와 정책 판단을 주도하고, AI 도구를 구현 및 검증에 활용한 개인 프로젝트입니다.</p></aside>
+      <aside class="implementation-note">
+        <span class="micro">FROM PLAN TO WORKING PRODUCT</span>
+        <h3>설계를 구현으로 연결</h3>
+        <p>메일 수집, 대화 분석, 대시보드, 사용자 판단 기록을 하나의 흐름으로 구성했습니다. 기획 의도를 실제 화면과 처리 규칙으로 확인하며 개선합니다.</p>
+        <div class="tech-list"><span>Python</span><span>SQLite</span><span>IMAP</span><span>HTML · CSS · JS</span><span>AI CLI / 선택형 엔진</span></div>
+        <p class="data-boundary" id="collection-masking"><strong>수집 단계에서 연락처 마스킹</strong><br>지정 폴더에서 새로 읽은 메일은 SQLite에 저장하기 전에 발신·수신 정보와 제목·본문·인용문에서 확인된 이름, 이메일, 전화번호를 가립니다. 답장 대기와 받는사람 재지정은 마스킹 전에 확인한 To 여부를 사용합니다.</p>
+        <div class="tech-list" aria-label="가상 메일 마스킹 예시"><span>이름 홍*동</span><span>팀 이메일 te****@lumi.example</span><span>전화번호 010-****-1234</span></div>
+        <p class="data-boundary"><strong>AI 전송 범위</strong><br>선택한 외부 AI 엔진으로 보낼 때는 전송용 복사본에서 확인된 이름·주소를 별칭으로 바꾸고, 전화번호 끝 네 자리도 가립니다.</p>
+        <p class="data-boundary"><strong>기획·구현의 역할</strong><br>업무 문제와 정책 판단을 주도하고, AI 도구를 구현 및 검증에 활용한 개인 프로젝트입니다.</p>
+      </aside>
     </div>
   </div>
 </section>

@@ -48,6 +48,7 @@ class Mail:
     # -- 로컬 저장소용 --
     folder: str = ""          # 이 메일을 받아온 메일함 (IMAP 이름)
     thread_hint: str = ""     # 제목으로 찾은 과거 메일을 붙일 스레드 (헤더로 못 묶는 경우)
+    recipient_names: list[str] = field(default_factory=list)  # 수집 마스킹용 표시명
 
     @property
     def is_unread(self) -> bool:

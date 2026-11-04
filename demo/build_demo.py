@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from nwmail.client import Mail                                      # noqa: E402
+from nwmail.collection_redaction import mask_collected_mail, mask_email_addresses  # noqa: E402
 from nwmail.dashboard import (RULES_PAGE, USAGE_PAGE, build_model, esc, render_html,  # noqa: E402
                               render_rules_html, render_usage_html, task_id)
 from nwmail.feedback import LABELS, MARKS, REASONS, FeedbackStore    # noqa: E402
@@ -31,8 +32,8 @@ from nwmail.server import _color_json, _due_json, _mark_json        # noqa: E402
 from nwmail.store import Store                                      # noqa: E402
 
 HERE = Path(__file__).resolve().parent
-DEMO_MAIL = HERE / "demo_mail.db"
-DEMO_FB = HERE / "demo_feedback.db"
+DEMO_MAIL = HERE / "demo_masked_mail.db"
+DEMO_FB = HERE / "demo_masked_feedback.db"
 PAGES = ROOT / "docs" / "index.html"  # 서버 없이 여는 데모 (GitHub Pages · 파일로 열어도 됨). 저장소에 올린다
 SERVED = HERE / "served.html"         # 데모 서버가 쓰는 페이지 (실행할 때마다 토큰이 바뀌어 올리지 않는다)
 RESET_LINK = ' 버튼 기록은 이 브라우저에만 저장돼요. <a href="#" id="demo-reset">처음 상태로</a>'
@@ -40,22 +41,26 @@ PORT = 8790
 
 KST = timezone(timedelta(hours=9))
 NOW = datetime(2026, 9, 18, 11, 0, tzinfo=KST)
-ME = "gdhong@lumi.example"
+SOURCE_ME = "gdhong@lumi.example"
+ME = mask_email_addresses(SOURCE_ME)
 ME_NAME = "홍길동 선임"
 TEAM = "team@lumi.example"
-NOTICE = "데모 화면입니다 — 회사 · 사람 · 메일은 모두 가상이며 실제 메일은 들어 있지 않습니다."
+EXAMPLE_PHONE = "010-0000-1234"
+EXAMPLE = mask_collected_mail(Mail("", "", "홍길동", TEAM, "", body=EXAMPLE_PHONE))
+NOTICE = ("가상 메일 데모 · 수집 단계 마스킹 "
+          f"{EXAMPLE.from_name} / {EXAMPLE.from_email} / {EXAMPLE.body}")
 STATIC_FILTER_NOTICE = ("이 파일형 데모에서는 완료·제외·프로젝트 상태·기한·색을 이 브라우저에 저장합니다. "
                         "차단 규칙·보호 도메인 변경은 전체 대시보드를 다시 계산하는 로컬 데모 서버에서 체험할 수 있습니다.")
 OPEN_PROJECT = "오로라 운영(기타)"    # 처음부터 펼쳐 둘 프로젝트 카드 (기본 보기인 '진행 중' 에 있는 것)
 
 # 이름 -> (보낸사람 표시, 주소)
 PEOPLE = {
-    "me": (ME_NAME, ME),
+    "me": (ME_NAME, SOURCE_ME),
     "이지우": ("이지우 매니저", "jiwoo.lee@aurora.example"),
     "서다은": ("서다은 책임", "daeun.seo@aurora.example"),
     "윤서진": ("윤서진 매니저", "seojin@nurimktg.co.example"),
     "강민재": ("강민재 대리", "minjae@nurimktg.co.example"),
-    "오세린": ("오세린 매니저", "serin@nurimktg.co.example"),
+    "오세린": ("오세린 매니저", "os.serin@nurimktg.co.example"),
     "차도현": ("차도현 AE", "dohyun@bluead.example"),
     "문태오": ("문태오 매니저", "taeo@voltlink.example"),
     "배수아": ("배수아 과장", "sua@haneul-tour.example"),
@@ -63,6 +68,12 @@ PEOPLE = {
     "김하늘": ("김하늘 책임", "haneul@lumi.example"),
     "박도윤": ("박도윤 디자이너", "doyun@lumi.example"),
 }
+SAMPLE_NAMES = [ME_NAME.split()[0], *(name for name in PEOPLE if name != "me")]
+
+
+def masked_text(text: str) -> str:
+    """미리 작성한 가상 추출 결과의 이름과 연락처에도 같은 마스킹을 적용한다."""
+    return mask_collected_mail(Mail("", text, "", "", "", recipient_names=SAMPLE_NAMES)).subject
 
 
 def at(month: int, day: int, hm: str) -> str:
@@ -75,16 +86,16 @@ def addr(who: str) -> str:
 
 
 def task(text, role, assignee="", org="", deadline="", fix=""):
-    return {"text": text, "role": role, "fix_type": fix, "assignee": assignee,
+    return {"text": masked_text(text), "role": role, "fix_type": fix, "assignee": masked_text(assignee),
             "assignee_org": org, "deadline": deadline}
 
 
 def act(text, deadline="", urgency="medium"):
-    return {"text": text, "deadline": deadline, "urgency": urgency}
+    return {"text": masked_text(text), "deadline": deadline, "urgency": urgency}
 
 
 def dec(text, by, date):
-    return {"text": text, "by": by, "date": date}
+    return {"text": masked_text(text), "by": masked_text(by), "date": date}
 
 
 # 대화: 제목 · 메일 (보낸사람, 시각, 받는사람, 참조, 본문) · 업무 정리 결과 (None 이면 정리 대기)
@@ -92,7 +103,7 @@ THREADS = [
     dict(key="store-gift", subject="[오로라 스토어] 추석 기프트 기획전 페이지 검토 요청", mails=[
         ("이지우", at(9, 14, "10:20"), ["me"], ["김하늘"],
          "추석 기프트 기획전 페이지 1차 시안 공유드립니다. 9월 19일까지 검토 의견 부탁드립니다.\n\n"
-         "감사합니다.\n이지우 드림\n오로라 고객경험팀\nMobile +82 10 0000 0000"),
+         f"연락처는 {EXAMPLE_PHONE}, 팀 이메일은 {TEAM}입니다.\n\n감사합니다.\n이지우 드림\n오로라 고객경험팀"),
         ("me", at(9, 15, "09:10"), ["이지우"], ["김하늘"],
          "확인했습니다. 오픈일은 9월 22일로 맞추겠습니다. 메인 배너는 두 가지 안으로 준비하겠습니다."),
         ("이지우", at(9, 17, "15:30"), ["me"], ["박도윤"],
@@ -391,7 +402,7 @@ def seed() -> None:
                          from_name=name, from_email=email, received_time=when, status="Read",
                          body=body, to=[addr(t) for t in to], cc=[addr(c) for c in cc],
                          message_id=mid, references=list(ids), in_reply_to=ids[-1] if ids else "",
-                         folder="Sent" if who == "me" else "INBOX")
+                         folder="Sent" if who == "me" else "INBOX", recipient_names=SAMPLE_NAMES)
                 (sent if who == "me" else inbox).append(m)
                 ids.append(mid)
             roots[th["key"]] = ids[0]
@@ -399,14 +410,18 @@ def seed() -> None:
             uid += 1
             inbox.append(Mail(mail_id=str(uid), subject=subject, from_name="", from_email=sender,
                               received_time=when, status="Read", body="(데모) 안내 메일",
-                              to=[ME], message_id=f"<b{uid}@demo.example>",
+                              to=[SOURCE_ME], message_id=f"<b{uid}@demo.example>",
                               list_unsubscribe=unsub, folder="INBOX"))
         inbox.sort(key=lambda m: m.received_time)
         sent.sort(key=lambda m: m.received_time)
-        st.save_mails(inbox, me=ME)
-        st.save_mails(sent, me=ME, folder="Sent")
+        addresses = {address.casefold() for mail in (*inbox, *sent)
+                     for address in (mail.from_email, *mail.to, *mail.cc) if address}
+        if len({mask_email_addresses(address) for address in addresses}) != len(addresses):
+            raise ValueError("데모 이메일이 마스킹 후 겹칩니다. 가상 주소 앞 두 글자를 구분하세요.")
+        st.save_mails([mask_collected_mail(mail) for mail in inbox], me=ME)
+        st.save_mails([mask_collected_mail(mail) for mail in sent], me=ME, folder="Sent")
         for kind, pattern, note, category, enabled in RULES:
-            add_filter(st, kind, pattern, note, category, enabled=enabled)
+            add_filter(st, kind, masked_text(pattern), note, category, enabled=enabled)
         add_protected(st, "bluead.example", "거래처")
         reapply(st)
         for when in (at(9, 17, "16:50"), at(9, 18, "10:50")):
@@ -429,7 +444,7 @@ def seed() -> None:
             return st.conn.execute("SELECT MAX(sent_at) FROM mails WHERE thread_key = ? AND is_mine = 0",
                                    (key[k],)).fetchone()[0]
 
-        subject = {th["key"]: th["subject"] for th in THREADS}
+        subject = {th["key"]: masked_text(th["subject"]) for th in THREADS}
         marks = [("thread", key["store-delay"], "answered", last_in("store-delay"), subject["store-delay"]),
                  ("project", "오로라 클래식", "done", last_in("classic-vip"), ""),
                  ("project", "잡스테이션", "deleted", "", "")]
@@ -449,6 +464,8 @@ def seed() -> None:
                 fb.mark(target, k, label, ref_at or "", title, now=when)
             for i, (k, kind, text, label, reason, extra) in enumerate(labeled):
                 snap = {"text": text, "kind": kind, "thread_key": key[k], "subject": subject[k], **extra}
+                if snap.get("assignee"):
+                    snap["assignee"] = masked_text(snap["assignee"])
                 fb.apply(task_id(key[k], kind, text), label, reason, snapshot=snap,
                          now=when + timedelta(minutes=10 * i))
             fb.set_color("하늘투어", "#7b5cd6", now=when)     # 색 막대에서 직접 고른 색 예시
